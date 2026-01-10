@@ -105,38 +105,15 @@ function isBoneGroup(obj: any): boolean {
   return isOutlinerGroup(obj) && !!obj.mesh;
 }
 
-// REMOVED: isChildOf() doesn't work for groups in Blockbench
-// Use manual .children traversal instead (same as preparePhysicsJobFromGroups)
-
 function collectGroupsDepthFirst(root: any): any[] {
   // Use manual .children traversal (isChildOf doesn't work for groups)
   const out: any[] = [];
   const stack: any[] = [];
   if (root) stack.push(root);
   
-  console.log('[BBPhysic Debug] collectGroupsDepthFirst START', {
-    rootType: root?.type,
-    rootName: root?.name || root?.uuid,
-    isGroup: isOutlinerGroup(root),
-  });
-  
-  let debugIteration = 0;
   while (stack.length) {
     const cur = stack.pop();
     if (!cur) continue;
-    
-    // Debug: log what we're processing
-    if (debugIteration < 15) {  // Limit debug output
-      console.log('[BBPhysic Debug] collectGroupsDepthFirst iteration', debugIteration++, {
-        curType: cur.type,
-        curName: cur.name || cur.uuid,
-        isGroup: isOutlinerGroup(cur),
-        hasChildren: !!cur.children,
-        childrenIsArray: Array.isArray(cur.children),
-        childrenLength: Array.isArray(cur.children) ? cur.children.length : 'N/A',
-        childrenTypes: Array.isArray(cur.children) ? cur.children.map((c: any) => c?.type || 'unknown') : 'N/A',
-      });
-    }
     
     if (isOutlinerGroup(cur)) out.push(cur);
     const children = cur.children;
@@ -147,11 +124,6 @@ function collectGroupsDepthFirst(root: any): any[] {
       }
     }
   }
-  
-  console.log('[BBPhysic Debug] collectGroupsDepthFirst RESULT', {
-    totalGroups: out.length,
-    groupNames: out.map((g: any) => g.name || g.uuid),
-  });
   
   return out;
 }
@@ -470,7 +442,6 @@ let lastUpdate = 0;
 
 let lineObjects: THREE.LineSegments[] = [];
 let markerObjects: THREE.Object3D[] = [];
-let lastJointDiagMs = 0;
 
 function clearObjects() {
   for (const o of lineObjects.splice(0, lineObjects.length)) {
@@ -583,64 +554,45 @@ export function updateWireframeOnce(force = false) {
     // In modeling workflow, the "joint" is the Group pivot (origin), not the cube AABB center.
     if (moving || collider) {
       // Collect groups from BOTH moving and collider groups to show all joints
-      const allGroups: any[] = [];
+      const movingGroups: any[] = [];
+      const colliderGroups: any[] = [];
+      
       if (moving) {
-        const movingGroups = collectGroupsDepthFirst(moving);
-        allGroups.push(...movingGroups);
+        movingGroups.push(...collectGroupsDepthFirst(moving));
       }
       if (collider) {
-        const colliderGroups = collectGroupsDepthFirst(collider);
-        // Add collider groups, avoiding duplicates
-        for (const g of colliderGroups) {
-          if (!allGroups.some((existing: any) => existing.uuid === g.uuid)) {
-            allGroups.push(g);
-          }
+        colliderGroups.push(...collectGroupsDepthFirst(collider));
+      }
+      
+      // Combine and deduplicate
+      const allGroups: any[] = [...movingGroups];
+      for (const g of colliderGroups) {
+        if (!allGroups.some((existing: any) => existing.uuid === g.uuid)) {
+          allGroups.push(g);
         }
       }
       
       const bones = allGroups.filter(isBoneGroup);
       const toShow = bones.length ? bones : allGroups;
       
-      // Debug logging
-      console.log('[BBPhysic Wireframe] Joint marker debug:', {
-        movingGroup: (moving as any)?.name || (moving as any)?.uuid || 'none',
-        colliderGroup: (collider as any)?.name || (collider as any)?.uuid || 'none',
-        totalGroups: allGroups.length,
-        totalBones: bones.length,
-        toShow: toShow.length,
-        groupNames: allGroups.map((g: any) => g.name || g.uuid),
-        boneNames: bones.map((g: any) => g.name || g.uuid),
-      });
-      
-      for (const g of toShow) buildGroupPivotMarker(g, color);
-
-      // If still only one marker shows up, it's either traversal failing (unexpected children shape)
-      // or all pivots coincide. Emit a throttled hint to help diagnose.
-      if (toShow.length <= 1) {
-        const nowMs = performance.now();
-        if (nowMs - lastJointDiagMs > 2000) {
-          lastJointDiagMs = nowMs;
-          try {
-            Blockbench.showQuickMessage(
-              `BBPhysic: joint markers found=${toShow.length} (groups=${groups.length}, bones=${bones.length})`,
-              2500
-            );
-          } catch {
-            // ignore
-          }
-        }
+      // Simplified debug output
+      if (toShow.length > 0) {
+        console.log('[BBPhysic] Joint markers:', {
+          moving: movingGroups.length,
+          collider: colliderGroups.length,
+          total: toShow.length,
+        });
       }
-    } else if (movingUuid) {
-      // Fallback: uuid->OutlinerNode traversal.
-      const rootNode = getNodeByUUID(String(movingUuid));
-      const groups = rootNode ? collectGroupsDepthFirst(rootNode) : [];
-      const bones = groups.filter(isBoneGroup);
-      const toShow = bones.length ? bones : groups;
-      for (const g of toShow) buildGroupPivotMarker(g, color);
-    }
-    // Collider pivots are useful as reference markers.
-    if (collider) {
-      buildGroupPivotMarker(collider, new THREE.Color('#ff4d4d'));
+      
+      // Build markers with correct colors based on hierarchy
+      for (const g of toShow) {
+        // Check if this group belongs to collider hierarchy
+        const isColliderGroup = colliderGroups.some((cg: any) => cg.uuid === g.uuid);
+        const markerColor = isColliderGroup 
+          ? new THREE.Color('#ff4d4d')  // Red for collider
+          : color;                        // Cyan for moving
+        buildGroupPivotMarker(g, markerColor);
+      }
     }
   }
 }
