@@ -15,7 +15,9 @@ export function registerBBPhysicTranslations() {
     'bbphysic.action.settings': 'Settings',
     'bbphysic.action.pick_root': 'Select Solve Root Group',
     'bbphysic.action.solve_once': 'Start Solve',
-    'bbphysic.action.preview': 'Preview (Realtime)',
+    'bbphysic.action.preview': 'Preview (Realtime OBB)',
+    'bbphysic.action.pause': 'Pause/Resume Preview',
+    'bbphysic.action.reset': 'Reset Preview',
     'bbphysic.action.wireframe': 'Debug Wireframe (Joints/Colliders)',
 
     'bbphysic.msg.settings_todo': 'BBPhysic: Settings (TODO)',
@@ -104,7 +106,9 @@ export function registerBBPhysicTranslations() {
     'bbphysic.action.settings': '设置',
     'bbphysic.action.pick_root': '选择参与解算的根 Group',
     'bbphysic.action.solve_once': '开始解算',
-    'bbphysic.action.preview': '预览（实时解算）',
+    'bbphysic.action.preview': '预览（实时OBB解算）',
+    'bbphysic.action.pause': '暂停/恢复预览',
+    'bbphysic.action.reset': '重置预览',
     'bbphysic.action.wireframe': '线框标出关节/碰撞体',
 
     'bbphysic.msg.settings_todo': 'BBPhysic: 设置（TODO）',
