@@ -84,3 +84,65 @@ export function prepareSelectedCubesPhysicsJob(): PreparedPhysicsJob {
 
   return currentJob;
 }
+
+/**
+ * 从指定的 Groups 中收集所有 Cube 的物理数据
+ * Collect physics data from all cubes within the specified groups
+ */
+export function preparePhysicsJobFromGroups(groups: Group[]): PreparedPhysicsJob {
+  // Hard reset to avoid any previous job affecting current job.
+  clearPreparedPhysicsJob();
+
+  const allCubes: Cube[] = [];
+  
+  // 递归收集所有 Group 中的 Cube
+  // Recursively collect all cubes from groups
+  function collectCubesFromGroup(group: Group) {
+    try {
+      const children = (group as any).children;
+      if (!Array.isArray(children)) return;
+      
+      for (const child of children) {
+        if (!child) continue;
+        
+        // 如果是 Cube，添加到列表
+        if ((child as any).type === 'cube') {
+          allCubes.push(child as Cube);
+        }
+        // 如果是 Group，递归处理
+        else if ((child as any).type === 'group') {
+          collectCubesFromGroup(child as Group);
+        }
+      }
+    } catch (e) {
+      console.warn('BBPhysic: Error collecting cubes from group:', e);
+    }
+  }
+
+  // 收集所有 Group 中的 Cube
+  for (const group of groups) {
+    if (!group) continue;
+    collectCubesFromGroup(group);
+  }
+
+  const prepared: PreparedCube[] = [];
+  for (const cube of allCubes) {
+    if (!cube) continue;
+    const vertices_world = safeGetCubeVerticesWorld(cube);
+    const edges = vertices_world.length === 8 ? cubeEdgesFor8Vertices() : [];
+    prepared.push({
+      uuid: String((cube as any).uuid ?? ''),
+      name: String((cube as any).name ?? ''),
+      vertices_world,
+      edges,
+    });
+  }
+
+  currentJob = {
+    createdAt: Date.now(),
+    cubeCount: prepared.length,
+    cubes: prepared,
+  };
+
+  return currentJob;
+}

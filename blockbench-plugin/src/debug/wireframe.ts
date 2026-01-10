@@ -106,18 +106,25 @@ function isBoneGroup(obj: any): boolean {
 }
 
 function collectGroupsDepthFirst(root: any): any[] {
+  // Use manual .children traversal (isChildOf doesn't work for groups)
   const out: any[] = [];
   const stack: any[] = [];
   if (root) stack.push(root);
+  
   while (stack.length) {
     const cur = stack.pop();
     if (!cur) continue;
+    
     if (isOutlinerGroup(cur)) out.push(cur);
     const children = cur.children;
     if (Array.isArray(children)) {
-      for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        if (child) stack.push(child);
+      }
     }
   }
+  
   return out;
 }
 
@@ -435,7 +442,6 @@ let lastUpdate = 0;
 
 let lineObjects: THREE.LineSegments[] = [];
 let markerObjects: THREE.Object3D[] = [];
-let lastJointDiagMs = 0;
 
 function clearObjects() {
   for (const o of lineObjects.splice(0, lineObjects.length)) {
@@ -546,40 +552,47 @@ export function updateWireframeOnce(force = false) {
 
   if (settings.show_joint_markers) {
     // In modeling workflow, the "joint" is the Group pivot (origin), not the cube AABB center.
-    if (moving) {
-      // Prefer traversing from the actual resolved Group object.
-      const groups = collectGroupsDepthFirst(moving);
-      const bones = groups.filter(isBoneGroup);
-      const toShow = bones.length ? bones : groups;
-      for (const g of toShow) buildGroupPivotMarker(g, color);
-
-      // If still only one marker shows up, it's either traversal failing (unexpected children shape)
-      // or all pivots coincide. Emit a throttled hint to help diagnose.
-      if (toShow.length <= 1) {
-        const nowMs = performance.now();
-        if (nowMs - lastJointDiagMs > 2000) {
-          lastJointDiagMs = nowMs;
-          try {
-            Blockbench.showQuickMessage(
-              `BBPhysic: joint markers found=${toShow.length} (groups=${groups.length}, bones=${bones.length})`,
-              2500
-            );
-          } catch {
-            // ignore
-          }
+    if (moving || collider) {
+      // Collect groups from BOTH moving and collider groups to show all joints
+      const movingGroups: any[] = [];
+      const colliderGroups: any[] = [];
+      
+      if (moving) {
+        movingGroups.push(...collectGroupsDepthFirst(moving));
+      }
+      if (collider) {
+        colliderGroups.push(...collectGroupsDepthFirst(collider));
+      }
+      
+      // Combine and deduplicate
+      const allGroups: any[] = [...movingGroups];
+      for (const g of colliderGroups) {
+        if (!allGroups.some((existing: any) => existing.uuid === g.uuid)) {
+          allGroups.push(g);
         }
       }
-    } else if (movingUuid) {
-      // Fallback: uuid->OutlinerNode traversal.
-      const rootNode = getNodeByUUID(String(movingUuid));
-      const groups = rootNode ? collectGroupsDepthFirst(rootNode) : [];
-      const bones = groups.filter(isBoneGroup);
-      const toShow = bones.length ? bones : groups;
-      for (const g of toShow) buildGroupPivotMarker(g, color);
-    }
-    // Collider pivots are useful as reference markers.
-    if (collider) {
-      buildGroupPivotMarker(collider, new THREE.Color('#ff4d4d'));
+      
+      const bones = allGroups.filter(isBoneGroup);
+      const toShow = bones.length ? bones : allGroups;
+      
+      // Simplified debug output
+      if (toShow.length > 0) {
+        console.log('[BBPhysic] Joint markers:', {
+          moving: movingGroups.length,
+          collider: colliderGroups.length,
+          total: toShow.length,
+        });
+      }
+      
+      // Build markers with correct colors based on hierarchy
+      for (const g of toShow) {
+        // Check if this group belongs to collider hierarchy
+        const isColliderGroup = colliderGroups.some((cg: any) => cg.uuid === g.uuid);
+        const markerColor = isColliderGroup 
+          ? new THREE.Color('#ff4d4d')  // Red for collider
+          : color;                        // Cyan for moving
+        buildGroupPivotMarker(g, markerColor);
+      }
     }
   }
 }

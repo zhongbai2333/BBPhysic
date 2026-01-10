@@ -1,6 +1,6 @@
 import { t } from '../i18n';
 import { setWireframeTargets, updateWireframeOnce } from '../debug/wireframe';
-import { prepareSelectedCubesPhysicsJob } from '../physics/prep';
+import { prepareSelectedCubesPhysicsJob, preparePhysicsJobFromGroups } from '../physics/prep';
 
 let movingGroupUuid: string | null = null;
 let colliderGroupUuid: string | null = null;
@@ -146,8 +146,8 @@ export function openBBPhysicSolveDialog() {
       }
 
       // Current stage: PREPARE ONLY.
-      // Collect vertex/edge data for currently selected cubes and store in memory for later physics solving.
-      const job = prepareSelectedCubesPhysicsJob();
+      // Collect vertex/edge data from cubes within the selected groups and store in memory for later physics solving.
+      const job = preparePhysicsJobFromGroups([moving, collider]);
 
       try {
         setWireframeTargets({ movingGroupUuid, colliderGroupUuid });
@@ -158,7 +158,7 @@ export function openBBPhysicSolveDialog() {
 
       if (job.cubeCount <= 0) {
         Blockbench.showQuickMessage(
-          t('bbphysic.solve.no_selected_cubes', '请先选择要参与解算的 Cube（当前阶段仅收集顶点/边信息）'),
+          t('bbphysic.solve.no_cubes_in_groups', '选中的 Group 中没有找到 Cube。请确保 Group 包含 Cube 元素。'),
           3500
         );
       } else {

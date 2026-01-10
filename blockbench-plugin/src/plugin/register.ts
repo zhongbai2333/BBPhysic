@@ -4,6 +4,13 @@ import { registerBBPhysicTranslations, t } from '../i18n';
 import { openBBPhysicSettingsDialog } from '../ui/settings_dialog';
 import { openBBPhysicSolveDialog } from '../ui/solve_dialog';
 import { disableWireframe, enableWireframe, isWireframeEnabled } from '../debug/wireframe';
+import { 
+  startPhysicsPreview, 
+  stopPhysicsPreview, 
+  togglePausePhysicsPreview,
+  resetPhysicsPreview,
+  isPreviewRunning 
+} from '../physics/preview';
 
 let wasmExports: BBPhysicWasmExports | undefined;
 let uiDeletables: Deletable[] = [];
@@ -23,7 +30,7 @@ function safeDeleteAll(items: Deletable[]) {
 }
 
 function registerTopMenu(plugin: Plugin) {
-  const actions: Action[] = [];
+  const actions: (Action | Toggle)[] = [];
 
   const actionSettings = new Action('bbphysic_menu_settings', {
     name: t('bbphysic.action.settings', '设置'),
@@ -57,21 +64,51 @@ function registerTopMenu(plugin: Plugin) {
   actions.push(actionSolveOnce);
 
   const actionPreview = new Toggle('bbphysic_menu_preview', {
-    name: t('bbphysic.action.preview', '预览（实时解算）'),
+    name: t('bbphysic.action.preview', '预览（实时OBB解算）'),
     icon: 'visibility',
     category: 'Tools',
     default: previewEnabled,
-    onChange(value) {
+    async onChange(value) {
       previewEnabled = value;
-      Blockbench.showQuickMessage(
-        value
-          ? t('bbphysic.msg.preview_on', 'BBPhysic: 预览 开启（TODO）')
-          : t('bbphysic.msg.preview_off', 'BBPhysic: 预览 关闭（TODO）'),
-        1800
-      );
+      if (value) {
+        // Start preview
+        const success = await startPhysicsPreview();
+        if (!success) {
+          // Revert toggle if failed
+          previewEnabled = false;
+          this.value = false;
+        }
+      } else {
+        // Stop preview
+        stopPhysicsPreview();
+      }
     },
   });
   actions.push(actionPreview);
+
+  // Add pause/resume action
+  const actionPause = new Action('bbphysic_menu_pause', {
+    name: t('bbphysic.action.pause', '暂停/恢复预览'),
+    icon: 'pause',
+    category: 'Tools',
+    condition: () => isPreviewRunning(),
+    click() {
+      togglePausePhysicsPreview();
+    },
+  });
+  actions.push(actionPause);
+
+  // Add reset action
+  const actionReset = new Action('bbphysic_menu_reset', {
+    name: t('bbphysic.action.reset', '重置预览'),
+    icon: 'refresh',
+    category: 'Tools',
+    condition: () => isPreviewRunning(),
+    click() {
+      resetPhysicsPreview();
+    },
+  });
+  actions.push(actionReset);
 
   const actionWireframe = new Toggle('bbphysic_menu_wireframe', {
     name: t('bbphysic.action.wireframe', '线框标出关节/碰撞体'),
@@ -91,7 +128,11 @@ function registerTopMenu(plugin: Plugin) {
     actionSettings,
     actionPickRoot,
     actionSolveOnce,
+    '_', // Separator
     actionPreview,
+    actionPause,
+    actionReset,
+    '_', // Separator
     actionWireframe,
   ]);
   try {
@@ -151,6 +192,12 @@ export function registerBBPhysicPlugin() {
       }
     },
     onunload() {
+      // Stop physics preview if running
+      try {
+        if (isPreviewRunning()) stopPhysicsPreview();
+      } catch {
+        // ignore
+      }
       wasmExports = undefined;
       selectedSolveRootUuid = null;
       previewEnabled = false;
