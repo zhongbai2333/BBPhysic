@@ -581,19 +581,34 @@ export function updateWireframeOnce(force = false) {
 
   if (settings.show_joint_markers) {
     // In modeling workflow, the "joint" is the Group pivot (origin), not the cube AABB center.
-    if (moving) {
-      // Prefer traversing from the actual resolved Group object.
-      const groups = collectGroupsDepthFirst(moving);
-      const bones = groups.filter(isBoneGroup);
-      const toShow = bones.length ? bones : groups;
+    if (moving || collider) {
+      // Collect groups from BOTH moving and collider groups to show all joints
+      const allGroups: any[] = [];
+      if (moving) {
+        const movingGroups = collectGroupsDepthFirst(moving);
+        allGroups.push(...movingGroups);
+      }
+      if (collider) {
+        const colliderGroups = collectGroupsDepthFirst(collider);
+        // Add collider groups, avoiding duplicates
+        for (const g of colliderGroups) {
+          if (!allGroups.some((existing: any) => existing.uuid === g.uuid)) {
+            allGroups.push(g);
+          }
+        }
+      }
+      
+      const bones = allGroups.filter(isBoneGroup);
+      const toShow = bones.length ? bones : allGroups;
       
       // Debug logging
       console.log('[BBPhysic Wireframe] Joint marker debug:', {
-        rootGroup: (moving as any).name || (moving as any).uuid,
-        totalGroups: groups.length,
+        movingGroup: (moving as any)?.name || (moving as any)?.uuid || 'none',
+        colliderGroup: (collider as any)?.name || (collider as any)?.uuid || 'none',
+        totalGroups: allGroups.length,
         totalBones: bones.length,
         toShow: toShow.length,
-        groupNames: groups.map((g: any) => g.name || g.uuid),
+        groupNames: allGroups.map((g: any) => g.name || g.uuid),
         boneNames: bones.map((g: any) => g.name || g.uuid),
       });
       
