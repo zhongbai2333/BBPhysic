@@ -108,6 +108,13 @@ function isBoneGroup(obj: any): boolean {
 function collectGroupsUnderGroup(rootGroup: Group): Group[] {
   const maxLevels = 9999;
   const allGroups = (Group as any).all as Group[] | undefined;
+  
+  console.log('[BBPhysic Debug] collectGroupsUnderGroup START', {
+    rootGroupName: (rootGroup as any).name,
+    rootGroupUuid: (rootGroup as any).uuid,
+    allGroupsCount: Array.isArray(allGroups) ? allGroups.length : 'not array',
+  });
+  
   if (!Array.isArray(allGroups)) return [];
   
   const result: Group[] = [];
@@ -118,13 +125,27 @@ function collectGroupsUnderGroup(rootGroup: Group): Group[] {
   // Add all descendant groups
   for (const g of allGroups) {
     try {
-      if (g && g !== rootGroup && (g as any).isChildOf && (g as any).isChildOf(rootGroup as any, maxLevels)) {
-        result.push(g);
+      const hasMethod = g && typeof (g as any).isChildOf === 'function';
+      if (g && g !== rootGroup && hasMethod) {
+        const isChild = (g as any).isChildOf(rootGroup as any, maxLevels);
+        console.log('[BBPhysic Debug] isChildOf check:', {
+          groupName: (g as any).name || (g as any).uuid,
+          isChild,
+          rootName: (rootGroup as any).name,
+        });
+        if (isChild) {
+          result.push(g);
+        }
       }
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn('[BBPhysic Debug] isChildOf error:', e);
     }
   }
+  
+  console.log('[BBPhysic Debug] collectGroupsUnderGroup RESULT', {
+    foundCount: result.length,
+    groupNames: result.map((g: any) => g.name || g.uuid),
+  });
   
   return result;
 }
