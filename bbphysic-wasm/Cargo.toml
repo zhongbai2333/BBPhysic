@@ -1,0 +1,11 @@
+[package]
+name = "bbphysic-wasm"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rapier3d = "0.32.0"
+glam = "0.30"

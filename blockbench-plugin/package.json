@@ -1,0 +1,16 @@
+{
+  "name": "bbphysic-blockbench-plugin",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "clean": "powershell -NoProfile -Command \"Remove-Item -Force -Recurse -ErrorAction SilentlyContinue dist\"",
+    "build": "node ./scripts/build.mjs",
+    "watch": "node ./scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "blockbench-types": "^5.0.6",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.3"
+  }
+}

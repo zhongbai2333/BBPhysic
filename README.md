@@ -1,73 +1,123 @@
 # BBPhysic
 
-Add physical solutions to Blockbench
+A Blockbench plugin that provides physics simulation and collision detection capabilities using the Rapier physics engine.
 
-## 开始使用（开发中）
+## Features
 
-当前仓库提供一个最小可加载的 Blockbench 插件脚本：`bbphysic.js`。
+- 🎯 **Physics Simulation**: Real-time physics using Rapier3D compiled to WebAssembly
+- 🔧 **Collision Detection**: OBB (Oriented Bounding Box) collision visualization
+- 🎨 **Wireframe Visualization**: Debug rendering for joints and colliders
+- ⚙️ **Comprehensive Settings**: Fine-tune physics parameters, collision layers, and display options
+- 🌍 **i18n Support**: English and Chinese translations
 
-1. 打开 Blockbench（桌面版优先）
-1. 打开插件管理（通常在 `File > Plugins`）并选择“从文件加载/Load Plugin from File”
-1. 选择本仓库根目录的 `bbphysic.js`
-1. 插件加载后：
+## Quick Start
 
-   - 在“工具/Tools”菜单中应能看到入口
-   - 或在 Action Control（动作搜索）里搜索 `BBPhysic`
+### For Users
 
-说明：
+1. Download the latest release from the [Releases](https://github.com/zhongbai2333/BBPhysic/releases) page
+2. In Blockbench, go to **File → Plugins → Load Plugin from File**
+3. Select the downloaded `bbphysic.js` file
+4. Ensure `bbphysic.wasm` is in the same directory as the plugin
 
-- `BBPhysic: 设置`：按类别配置（基础 / 物理（Rapier）/ 碰撞（OBB）/ 布料组 / 调试），写入本机存储
-- `BBPhysic: Bake（预烘培）`：对时间区间逐帧解算并写入旋转关键帧（带 Undo）
-- `BBPhysic: 预览（开/关）`：实时预览解算效果（不写关键帧）
+### For Developers
 
-解算说明（当前版本）：
+See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed development instructions.
 
-- 物理求解全部由 **Rust/WASM + Rapier** 完成（JS 不再自研 solver）
-- 碰撞仅使用 **OBB**：外部环境 OBB 来自 movingRoot 下的 cubes（几何驱动）
+多文件开发骨架（TypeScript + esbuild），最终输出单文件插件到 `dist/bbphysic.js`。
 
-实现细节与通信数据布局见：`doc.md`
+## Quick Build
 
-使用流程：
+### Build Plugin
 
-1. 在动画面板选中目标动画
-1. 在 Outliner 里选中裙摆骨骼链的“根骨骼”(Group)
-1. 执行 `BBPhysic: Bake 到关键帧`，在对话框里确认起止时间/轴/覆盖策略后开始
+```bash
+cd blockbench-plugin
+npm install
+npm run build
+```
 
-设置补充：
+This creates `blockbench-plugin/dist/bbphysic.js`.
 
-- **解算范围**：仅选中的根骨骼 / 所有根骨骼（全模型）
+### Build WASM Module
 
-## Rust/WASM（必需）
+On Windows (PowerShell):
 
-仓库内提供 Rust→WASM 模块，负责 Rapier 解算。
+```powershell
+.\scripts\build_wasm.ps1
+```
 
-1. 安装 Rust 工具链，并添加 wasm target：
+On Linux/macOS:
 
-   - `rustup target add wasm32-unknown-unknown`
+```bash
+# Build WASM
+cargo build -p bbphysic-wasm --target wasm32-unknown-unknown --release
 
-1. 编译 wasm：
+# Copy to plugin dist
+mkdir -p blockbench-plugin/dist
+cp target/wasm32-unknown-unknown/release/bbphysic_wasm.wasm blockbench-plugin/dist/bbphysic.wasm
+```
 
-   - `cd rust/bbphysic_wasm`
-   - `cargo build --release --target wasm32-unknown-unknown`
+## Usage
 
-1. 放置 wasm 文件到插件同目录：
+After loading the plugin, you'll find a **BBPhysic** menu in the menu bar with:
 
-   - 将 `rust/bbphysic_wasm/target/wasm32-unknown-unknown/release/bbphysic_wasm.wasm`
-     复制到你“加载 bbphysic.js 的那个目录”（例如本仓库根目录），并命名为 `bbphysic_wasm.wasm`
+- **Settings**: Configure physics parameters, collision settings, and visualization options
+- **Select Solve Root Group**: Choose groups for physics simulation
+- **Start Solve**: Begin physics calculation (currently in data preparation phase)
+- **Preview (Realtime)**: Toggle real-time physics preview
+- **Debug Wireframe**: Visualize joints and collision shapes
 
-说明：
+## Current Status
 
-- 如果你是“从文件加载”插件，并且指向的是本仓库根目录的 `bbphysic.js`，那么 `bbphysic_wasm.wasm` 也应放在本仓库根目录。
-- 也支持放在 Blockbench 的 userData/plugins 目录作为后备路径。
+The plugin is currently in the **data preparation phase**:
 
-当前阶段：Bake + 预览 都可用；碰撞为 OBB-only。
+- ✅ Plugin infrastructure complete
+- ✅ WASM integration working
+- ✅ UI dialogs implemented
+- ✅ Wireframe visualization functional
+- ⏳ Physics simulation integration (in progress)
 
-## 开发（多文件源码 + 打包输出 bbphysic.js）
+See [TODO.md](TODO.md) for the complete roadmap.
 
-为了提高可维护性，源码已拆分到 `src/` 目录；Blockbench 实际加载的仍然是仓库根目录的 `bbphysic.js`（构建产物）。
+## Development
 
-- 安装依赖：`npm install`
-- 构建输出：`npm run build`（生成/更新根目录 `bbphysic.js`）
-- 监听构建：`npm run watch`
+```bash
+cd blockbench-plugin
+npm i
+npm run build
+```
 
-注意：请不要直接修改根目录的 `bbphysic.js`，它会在构建时被覆盖；请改 `src/` 下的源码。
+## 构建 Rapier WASM
+
+插件会在启动时尝试从“插件文件所在目录”加载 `bbphysic.wasm`（注意：不是进程工作目录）。
+
+在仓库根目录运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_wasm.ps1
+```
+
+这会构建 `bbphysic-wasm` 并把产物复制到 `blockbench-plugin/dist/bbphysic.wasm`。
+
+## 载入到 Blockbench
+
+- 打开 Blockbench → Plugins 菜单 → 选择从文件加载（或把 `dist/bbphysic.js` 拖入 Blockbench）
+- 确保同目录存在 `dist/bbphysic.wasm`（由上面的 WASM 构建脚本生成）
+- 插件加载后，在 Tools 菜单会出现 `BBPhysic: Test Action`
+
+## 目录
+
+- `src/index.ts`: 入口
+- `src/plugin/register.ts`: `Plugin.register` 元数据与生命周期
+- `src/physics/*`: 物理/碰撞相关模块（后续扩展）
+- `dist/bbphysic.js`: 构建产物（可直接加载）
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Check [TODO.md](TODO.md) for planned features
+2. Follow the existing code style
+3. Test in Blockbench before submitting
+4. Read [DEVELOPMENT.md](DEVELOPMENT.md) for guidelines
+
+For detailed development documentation, see [DEVELOPMENT.md](DEVELOPMENT.md).
