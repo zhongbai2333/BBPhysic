@@ -44,6 +44,19 @@ export interface BBPhysicWasmExports {
   // 查询
   bbp_get_body_count: (handle: number) => number;
   
+  // OBB 碰撞检测
+  bbp_check_obb_collision: (
+    vertices1Ptr: number,
+    vertices2Ptr: number
+  ) => number;
+  
+  bbp_get_obb_collision_info: (
+    vertices1Ptr: number,
+    vertices2Ptr: number
+  ) => number;
+  
+  bbp_free_collision_info: (ptr: number) => void;
+  
   // WASM memory access
   memory: WebAssembly.Memory;
 }
