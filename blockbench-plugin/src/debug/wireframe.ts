@@ -105,17 +105,70 @@ function isBoneGroup(obj: any): boolean {
   return isOutlinerGroup(obj) && !!obj.mesh;
 }
 
+function collectGroupsUnderGroup(rootGroup: Group): Group[] {
+  const maxLevels = 9999;
+  const allGroups = (Group as any).all as Group[] | undefined;
+  if (!Array.isArray(allGroups)) return [];
+  
+  const result: Group[] = [];
+  
+  // Add the root group itself
+  result.push(rootGroup);
+  
+  // Add all descendant groups
+  for (const g of allGroups) {
+    try {
+      if (g && g !== rootGroup && (g as any).isChildOf && (g as any).isChildOf(rootGroup as any, maxLevels)) {
+        result.push(g);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  
+  return result;
+}
+
 function collectGroupsDepthFirst(root: any): any[] {
+  // Try the new approach first: use isChildOf like we do for cubes
+  if (root && isOutlinerGroup(root)) {
+    try {
+      return collectGroupsUnderGroup(root as Group);
+    } catch (e) {
+      console.warn('[BBPhysic] collectGroupsUnderGroup failed, falling back to manual traversal:', e);
+    }
+  }
+  
+  // Fallback: manual traversal
   const out: any[] = [];
   const stack: any[] = [];
   if (root) stack.push(root);
+  
+  let debugIteration = 0;
   while (stack.length) {
     const cur = stack.pop();
     if (!cur) continue;
+    
+    // Debug: log what we're processing
+    if (debugIteration < 10) {  // Limit debug output
+      console.log('[BBPhysic Debug] collectGroupsDepthFirst iteration', debugIteration++, {
+        curType: cur.type,
+        curName: cur.name || cur.uuid,
+        isGroup: isOutlinerGroup(cur),
+        hasChildren: !!cur.children,
+        childrenIsArray: Array.isArray(cur.children),
+        childrenLength: Array.isArray(cur.children) ? cur.children.length : 'N/A',
+        childrenTypes: Array.isArray(cur.children) ? cur.children.map((c: any) => c?.type || 'unknown') : 'N/A',
+      });
+    }
+    
     if (isOutlinerGroup(cur)) out.push(cur);
     const children = cur.children;
     if (Array.isArray(children)) {
-      for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        if (child) stack.push(child);
+      }
     }
   }
   return out;
