@@ -23,7 +23,7 @@ function safeDeleteAll(items: Deletable[]) {
 }
 
 function registerTopMenu(plugin: Plugin) {
-  const actions: Action[] = [];
+  const actions: (Action | Toggle)[] = [];
 
   const actionSettings = new Action('bbphysic_menu_settings', {
     name: t('bbphysic.action.settings', '设置'),
