@@ -105,65 +105,20 @@ function isBoneGroup(obj: any): boolean {
   return isOutlinerGroup(obj) && !!obj.mesh;
 }
 
-function collectGroupsUnderGroup(rootGroup: Group): Group[] {
-  const maxLevels = 9999;
-  const allGroups = (Group as any).all as Group[] | undefined;
-  
-  console.log('[BBPhysic Debug] collectGroupsUnderGroup START', {
-    rootGroupName: (rootGroup as any).name,
-    rootGroupUuid: (rootGroup as any).uuid,
-    allGroupsCount: Array.isArray(allGroups) ? allGroups.length : 'not array',
-  });
-  
-  if (!Array.isArray(allGroups)) return [];
-  
-  const result: Group[] = [];
-  
-  // Add the root group itself
-  result.push(rootGroup);
-  
-  // Add all descendant groups
-  for (const g of allGroups) {
-    try {
-      const hasMethod = g && typeof (g as any).isChildOf === 'function';
-      if (g && g !== rootGroup && hasMethod) {
-        const isChild = (g as any).isChildOf(rootGroup as any, maxLevels);
-        console.log('[BBPhysic Debug] isChildOf check:', {
-          groupName: (g as any).name || (g as any).uuid,
-          isChild,
-          rootName: (rootGroup as any).name,
-        });
-        if (isChild) {
-          result.push(g);
-        }
-      }
-    } catch (e) {
-      console.warn('[BBPhysic Debug] isChildOf error:', e);
-    }
-  }
-  
-  console.log('[BBPhysic Debug] collectGroupsUnderGroup RESULT', {
-    foundCount: result.length,
-    groupNames: result.map((g: any) => g.name || g.uuid),
-  });
-  
-  return result;
-}
+// REMOVED: isChildOf() doesn't work for groups in Blockbench
+// Use manual .children traversal instead (same as preparePhysicsJobFromGroups)
 
 function collectGroupsDepthFirst(root: any): any[] {
-  // Try the new approach first: use isChildOf like we do for cubes
-  if (root && isOutlinerGroup(root)) {
-    try {
-      return collectGroupsUnderGroup(root as Group);
-    } catch (e) {
-      console.warn('[BBPhysic] collectGroupsUnderGroup failed, falling back to manual traversal:', e);
-    }
-  }
-  
-  // Fallback: manual traversal
+  // Use manual .children traversal (isChildOf doesn't work for groups)
   const out: any[] = [];
   const stack: any[] = [];
   if (root) stack.push(root);
+  
+  console.log('[BBPhysic Debug] collectGroupsDepthFirst START', {
+    rootType: root?.type,
+    rootName: root?.name || root?.uuid,
+    isGroup: isOutlinerGroup(root),
+  });
   
   let debugIteration = 0;
   while (stack.length) {
@@ -171,7 +126,7 @@ function collectGroupsDepthFirst(root: any): any[] {
     if (!cur) continue;
     
     // Debug: log what we're processing
-    if (debugIteration < 10) {  // Limit debug output
+    if (debugIteration < 15) {  // Limit debug output
       console.log('[BBPhysic Debug] collectGroupsDepthFirst iteration', debugIteration++, {
         curType: cur.type,
         curName: cur.name || cur.uuid,
@@ -192,6 +147,12 @@ function collectGroupsDepthFirst(root: any): any[] {
       }
     }
   }
+  
+  console.log('[BBPhysic Debug] collectGroupsDepthFirst RESULT', {
+    totalGroups: out.length,
+    groupNames: out.map((g: any) => g.name || g.uuid),
+  });
+  
   return out;
 }
 
