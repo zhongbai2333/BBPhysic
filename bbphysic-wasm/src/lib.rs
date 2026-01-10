@@ -4,10 +4,20 @@ use glam::Quat;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-// 一个极简的「物理世界」封装：后续你可以逐步补充
-// - 从 Blockbench 模型生成刚体/碰撞体
-// - 查询/投射/碰撞事件
-// - 序列化/快照等
+// ============================================================================
+// BBPhysic - OBB（Oriented Bounding Box）物理引擎
+// ============================================================================
+// 本项目专注于使用 OBB 进行碰撞检测与物理解算
+// OBB 优势：
+// - 紧密贴合旋转物体，减少误碰撞
+// - 适合 Blockbench 的 Cube 模型（本身就是方向盒）
+// - 支持精确的旋转碰撞检测
+// ============================================================================
+
+/// 物理世界封装
+/// 
+/// 管理所有刚体、碰撞体和物理模拟状态
+/// 当前使用 Rapier 作为后端，未来可扩展 OBB 专用算法
 struct PhysicsWorld {
     pipeline: PhysicsPipeline,
     gravity: Vector,
@@ -320,3 +330,37 @@ pub extern "C" fn bbp_get_body_count(handle: u32) -> u32 {
         }
     })
 }
+
+// ============================================================================
+// TODO: OBB 专用碰撞检测算法
+// ============================================================================
+// 
+// 未来将实现以下 OBB 专用功能：
+//
+// 1. OBB 数据结构
+//    struct OBB {
+//        center: Vector,           // 中心点
+//        axes: [Vector; 3],        // 三个主轴（单位向量）
+//        half_extents: [Real; 3],  // 沿每个轴的半尺寸
+//    }
+//
+// 2. 从 8 顶点计算 OBB
+//    fn compute_obb_from_vertices(vertices: &[Vector; 8]) -> OBB
+//
+// 3. OBB-OBB 碰撞检测（分离轴定理）
+//    fn check_obb_collision(obb1: &OBB, obb2: &OBB) -> Option<CollisionInfo>
+//
+// 4. 导出接口
+//    #[no_mangle]
+//    pub extern "C" fn bbp_add_obb_collider(...) -> u32
+//    
+//    #[no_mangle]
+//    pub extern "C" fn bbp_check_obb_collision(...) -> u32
+//
+// 性能优化方向：
+// - 早期退出（快速排除明显不碰撞的情况）
+// - 缓存投影计算
+// - SIMD 优化（glam 已支持）
+// - 空间分区（BVH）
+//
+// ============================================================================
