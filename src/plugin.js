@@ -1,9 +1,9 @@
-import { PLUGIN_ID, PLUGIN_VERSION, state } from './state.js';
+import { PLUGIN_ID, PLUGIN_VERSION, state, resetRuntimeState } from './state.js';
 import { notify } from './util.js';
 import { loadConfigFromStorage } from './config_storage.js';
 import { openBakeDialog, openSettingsDialog, openStep1MovingObjectDialog, openStep2TargetObjectDialog } from './dialogs.js';
 import { togglePreview, stopPreview } from './preview.js';
-import { applyCapsuleVisualSettings, stopCapsuleUpdates, getSceneForCollider } from './collider_visual.js';
+import { toggleBoxGhost, disposeBoxGhost } from './box_visual.js';
 import { tryInitWasm } from './wasm.js';
 
 function safeAddToMenu(action, path) {
@@ -32,8 +32,8 @@ export function registerPlugin() {
 		version: PLUGIN_VERSION,
 
 		onload() {
+			resetRuntimeState();
 			loadConfigFromStorage();
-			applyCapsuleVisualSettings();
 			tryInitWasm();
 
 			state.actions.step1_moving = new Action('bbphysic_step1_moving', {
@@ -81,21 +81,33 @@ export function registerPlugin() {
 				},
 			});
 
+			state.actions.ghost = new Action('bbphysic_ghost', {
+				name: 'BBPhysic: OBB 虚影（开/关）',
+				icon: 'visibility',
+				category: 'Tools',
+				click() {
+					toggleBoxGhost();
+				},
+			});
+
 			safeAddToMenu(state.actions.settings, 'tools.0');
 			safeAddToMenu(state.actions.step1_moving, 'tools.0');
 			safeAddToMenu(state.actions.step2_target, 'tools.0');
 			safeAddToMenu(state.actions.bake, 'tools.0');
 			safeAddToMenu(state.actions.preview, 'tools.0');
+			safeAddToMenu(state.actions.ghost, 'tools.0');
 
 			notify(`BBPhysic 已加载（v${PLUGIN_VERSION}）：仅 Bake 模式`, 2500);
 		},
 
 		onunload() {
+			resetRuntimeState();
 			safeRemoveFromMenu('tools.bbphysic_settings');
 			safeRemoveFromMenu('tools.bbphysic_step1_moving');
 			safeRemoveFromMenu('tools.bbphysic_step2_target');
 			safeRemoveFromMenu('tools.bbphysic_bake');
 			safeRemoveFromMenu('tools.bbphysic_preview');
+			safeRemoveFromMenu('tools.bbphysic_ghost');
 
 			try {
 				stopPreview();
@@ -104,12 +116,7 @@ export function registerPlugin() {
 			}
 
 			try {
-				stopCapsuleUpdates();
-				const scn = getSceneForCollider();
-				if (scn && state.movingCapsulesGroup) scn.remove(state.movingCapsulesGroup);
-				if (scn && state.targetCapsulesGroup) scn.remove(state.targetCapsulesGroup);
-				state.movingCapsulesGroup = null;
-				state.targetCapsulesGroup = null;
+				disposeBoxGhost();
 			} catch (e) {
 				// ignore
 			}
@@ -119,6 +126,7 @@ export function registerPlugin() {
 			if (state.actions.step2_target) state.actions.step2_target.delete();
 			if (state.actions.bake) state.actions.bake.delete();
 			if (state.actions.preview) state.actions.preview.delete();
+			if (state.actions.ghost) state.actions.ghost.delete();
 		},
 	});
 }

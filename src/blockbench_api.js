@@ -25,13 +25,85 @@ export function isBoneGroup(obj) {
 	return isOutlinerGroup(obj) && !!obj.mesh;
 }
 
+function getOutlinerSelectedNodes() {
+	try {
+		if (typeof Outliner !== 'undefined' && Outliner && Array.isArray(Outliner.selected)) {
+			return Outliner.selected.slice();
+		}
+	} catch (e) {
+		// ignore
+	}
+	return [];
+}
+
+function findParentGroup(node) {
+	let cur = node;
+	for (let i = 0; i < 64; i++) {
+		if (!cur) return null;
+		if (isOutlinerGroup(cur)) return cur;
+		const p = cur.parent;
+		if (!p || p === 'root') return null;
+		cur = p;
+	}
+	return null;
+}
+
+function uniqueGroups(groups) {
+	/** @type {Map<string, any>} */
+	const byId = new Map();
+	/** @type {any[]} */
+	const fallback = [];
+	for (const g of groups) {
+		if (!g) continue;
+		const id = typeof g.uuid === 'string' ? g.uuid : '';
+		if (id) {
+			if (!byId.has(id)) byId.set(id, g);
+		} else {
+			fallback.push(g);
+		}
+	}
+	return [...byId.values(), ...fallback];
+}
+
+function filterRootWithinSelection(groups) {
+	const list = uniqueGroups(groups).filter(isOutlinerGroup);
+	/** @type {Set<string>} */
+	const ids = new Set(list.map((g) => String(g?.uuid || '')).filter((s) => s));
+	return list.filter((g) => {
+		let p = g?.parent;
+		for (let i = 0; i < 64; i++) {
+			if (!p || p === 'root') return true;
+			const pid = String(p?.uuid || '');
+			if (pid && ids.has(pid)) return false;
+			p = p.parent;
+		}
+		return true;
+	});
+}
+
 export function getSelectedRootGroups() {
 	try {
 		if (typeof Group !== 'undefined' && Group) {
 			if (Array.isArray(Group.multi_selected) && Group.multi_selected.length) {
-				return Group.multi_selected.filter(isBoneGroup);
+				return filterRootWithinSelection(Group.multi_selected);
 			}
-			if (Group.selected && isBoneGroup(Group.selected)) return [Group.selected];
+			if (Group.selected && isOutlinerGroup(Group.selected)) return [Group.selected];
+		}
+	} catch (e) {
+		// ignore
+	}
+
+	// Fallback: if user selected cubes/elements (not groups), infer their parent groups from Outliner selection.
+	try {
+		const nodes = getOutlinerSelectedNodes();
+		if (nodes.length) {
+			/** @type {any[]} */
+			const groups = [];
+			for (const n of nodes) {
+				const g = findParentGroup(n);
+				if (g) groups.push(g);
+			}
+			return filterRootWithinSelection(groups);
 		}
 	} catch (e) {
 		// ignore

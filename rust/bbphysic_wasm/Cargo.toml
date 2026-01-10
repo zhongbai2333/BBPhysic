@@ -13,3 +13,6 @@ codegen-units = 1
 panic = "abort"
 
 [dependencies]
+
+# Physics / collision queries (used as a robust broad-phase + narrow-phase for baked collisions)
+rapier3d = { version = "0.18", default-features = false, features = ["dim3", "f32"] }

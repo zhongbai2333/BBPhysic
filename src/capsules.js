@@ -1,20 +1,17 @@
 import { isOutlinerGroup, isBoneGroup, computeGroupPivotWorldCurrentPose, readGroupOrigin } from './blockbench_api.js';
-import { v3len, v3sub, v3add, v3scale, m3fromEulerXYZDeg, m3mulV3 } from './math.js';
+import { v3len, v3sub, m3fromEulerXYZDeg, m3mulV3 } from './math.js';
 
 /**
- * CapsuleDef
- * - If `start_offset_local`/`end_offset_local` exist, endpoints are computed from the same bone's pivot.
- * - If `cube_uuid` is set and `dynamic_from_cube` is true, offsets and radius are recomputed each frame from that cube geometry.
+ * BoxDef (OBB from cube geometry)
  * @typedef {{
- *  a_uuid: string,
- *  b_uuid: string,
- *  radius: number,
- *  start_offset_local?: [number,number,number],
- *  end_offset_local?: [number,number,number],
- *  cube_uuid?: string,
- *  dynamic_from_cube?: boolean
- * }} CapsuleDef
- * @typedef {{a: [number, number, number], b: [number, number, number], radius: number}} CapsuleWorld
+ *  group_uuid: string,
+ *  cube_uuid: string
+ * }} BoxDef
+ * @typedef {{
+ *  center: [number,number,number],
+ *  axes: [[number,number,number],[number,number,number],[number,number,number]],
+ *  half: [number,number,number]
+ * }} BoxWorld
  */
 
 function isCubeLike(node) {
@@ -79,14 +76,20 @@ function applyCubeRotationToPoint(p, cubeRotDeg, cubePivot) {
 	return [cubePivot[0] + rr[0], cubePivot[1] + rr[1], cubePivot[2] + rr[2]];
 }
 
+function v3normalizeLocal(v) {
+	const l = v3len(v);
+	if (l <= 1e-10) return [0, 1, 0];
+	return [v[0] / l, v[1] / l, v[2] / l];
+}
+
 /**
- * Build an oriented capsule for a single cube in GROUP SPACE, then convert to offsets relative to group.origin.
- * Endpoints follow cube.rotation (about cube.origin), axis follows the cube's longest dimension.
+ * Build an oriented box for a single cube in GROUP SPACE, then convert to offsets relative to group.origin.
+ * Box axes follow cube.rotation (about cube.origin).
  * @param {any} group
  * @param {any} cube
- * @returns {{start:[number,number,number], end:[number,number,number], radius:number}|null}
+ * @returns {{center:[number,number,number], axes:[[number,number,number],[number,number,number],[number,number,number]], half:[number,number,number]}|null}
  */
-function computeOrientedCubeCapsuleOffsetsLocal(group, cube) {
+function computeOrientedCubeBoxLocal(group, cube) {
 	if (!group || !cube) return null;
 	const f = cube.from;
 	const t = cube.to;
@@ -97,51 +100,41 @@ function computeOrientedCubeCapsuleOffsetsLocal(group, cube) {
 	const dy = Math.abs(ty - fy);
 	const dz = Math.abs(tz - fz);
 
-	// Determine major axis in the cube's unrotated space
-	/** @type {[number,number,number]} */
-	let axis = [1, 0, 0];
-	let halfLen = 0.5 * dx;
-	let radius = 0.5 * Math.max(0.1, Math.min(dy, dz));
-	if (dy >= dx && dy >= dz) {
-		axis = [0, 1, 0];
-		halfLen = 0.5 * dy;
-		radius = 0.5 * Math.max(0.1, Math.min(dx, dz));
-	} else if (dz >= dx && dz >= dy) {
-		axis = [0, 0, 1];
-		halfLen = 0.5 * dz;
-		radius = 0.5 * Math.max(0.1, Math.min(dx, dy));
+	const center0 = [(fx + tx) * 0.5, (fy + ty) * 0.5, (fz + tz) * 0.5];
+	const pivot = readVec3Any(cube.origin) || center0;
+	const cubeRotDeg = readVec3Any(cube.rotation);
+	const center = applyCubeRotationToPoint(center0, cubeRotDeg, pivot);
+
+	let ax = [1, 0, 0];
+	let ay = [0, 1, 0];
+	let az = [0, 0, 1];
+	if (cubeRotDeg) {
+		const m = m3fromEulerXYZDeg(cubeRotDeg);
+		ax = v3normalizeLocal(m3mulV3(m, [1, 0, 0]));
+		ay = v3normalizeLocal(m3mulV3(m, [0, 1, 0]));
+		az = v3normalizeLocal(m3mulV3(m, [0, 0, 1]));
 	}
 
-	// If degenerate, force a small length
-	if (!(halfLen > 1e-4)) halfLen = 0.5;
-	if (!(radius > 1e-4)) radius = 0.1;
-
-	const center = [(fx + tx) * 0.5, (fy + ty) * 0.5, (fz + tz) * 0.5];
-	const pivot = readVec3Any(cube.origin) || center;
-	const cubeRotDeg = readVec3Any(cube.rotation);
-
-	const a0 = v3sub(v3add(center, v3scale(axis, -halfLen)), [0, 0, 0]);
-	const b0 = v3sub(v3add(center, v3scale(axis, +halfLen)), [0, 0, 0]);
-
-	const aRot = applyCubeRotationToPoint(a0, cubeRotDeg, pivot);
-	const bRot = applyCubeRotationToPoint(b0, cubeRotDeg, pivot);
-
+	const half = [Math.max(0.05, dx * 0.5), Math.max(0.05, dy * 0.5), Math.max(0.05, dz * 0.5)];
 	const go = readGroupOrigin(group);
-	const start = /** @type {[number,number,number]} */ ([aRot[0] - go[0], aRot[1] - go[1], aRot[2] - go[2]]);
-	const end = /** @type {[number,number,number]} */ ([bRot[0] - go[0], bRot[1] - go[1], bRot[2] - go[2]]);
-	return { start, end, radius: Math.max(0.1, Math.min(64, radius)) };
+	return {
+		center: /** @type {[number,number,number]} */ ([center[0] - go[0], center[1] - go[1], center[2] - go[2]]),
+		axes: /** @type {any} */ ([ax, ay, az]),
+		half: /** @type {[number,number,number]} */ ([half[0], half[1], half[2]]),
+	};
 }
-
-
 export function computeGroupApproxRadius(group) {
 	if (!group) return 0;
-	// Use the max radius among direct cubes
+	// Use the max inscribed radius among direct cubes (derived from OBB half-extents)
 	try {
 		const cubes = collectCubesUnderGroup(group);
 		let r = 0;
 		for (const cube of cubes) {
-			const seg = computeOrientedCubeCapsuleOffsetsLocal(group, cube);
-			if (seg && seg.radius > r) r = seg.radius;
+			const obb = computeOrientedCubeBoxLocal(group, cube);
+			if (!obb) continue;
+			const half = obb.half;
+			const rr = Math.max(0.05, Math.min(Number(half?.[0]) || 0, Number(half?.[1]) || 0, Number(half?.[2]) || 0));
+			if (rr > r) r = rr;
 		}
 		if (r > 1e-6) return r;
 	} catch (e) {
@@ -152,54 +145,25 @@ export function computeGroupApproxRadius(group) {
 }
 
 /**
- * Build capsule segments from a root group based on bone connections AND cube geometry.
+ * Build OBB(box) defs from a root group, per direct cube under each bone group.
  * @param {any} rootGroup
- * @returns {CapsuleDef[]}
+ * @returns {BoxDef[]}
  */
-export function buildCapsuleDefsFromRoot(rootGroup) {
-	/** @type {CapsuleDef[]} */
-	const capsules = [];
-	if (!rootGroup || !isOutlinerGroup(rootGroup)) return capsules;
+export function buildBoxDefsFromRoot(rootGroup) {
+	/** @type {BoxDef[]} */
+	const boxes = [];
+	if (!rootGroup || !isOutlinerGroup(rootGroup)) return boxes;
 	const groups = collectGroupsDepthFirst(rootGroup);
-
-	// Prefer cube-based capsules PER CUBE (these follow cube rotation and thickness)
 	for (const g of groups) {
 		if (!isBoneGroup(g) || !g?.uuid) continue;
 		const cubes = collectCubesUnderGroup(g);
 		for (const cube of cubes) {
 			const cuuid = String(cube?.uuid || '');
 			if (!cuuid) continue;
-			const seg = computeOrientedCubeCapsuleOffsetsLocal(g, cube);
-			if (!seg) continue;
-			capsules.push({
-				a_uuid: String(g.uuid),
-				b_uuid: String(g.uuid),
-				radius: seg.radius,
-				start_offset_local: seg.start,
-				end_offset_local: seg.end,
-				cube_uuid: cuuid,
-				dynamic_from_cube: true,
-			});
+			boxes.push({ group_uuid: String(g.uuid), cube_uuid: cuuid });
 		}
 	}
-
-	// Fallback: if nothing had cubes (rare), build joint-to-joint capsules
-	if (capsules.length === 0) {
-		for (const parent of groups) {
-			if (!isBoneGroup(parent) || !parent?.uuid) continue;
-			const children = (parent.children || []).filter(isOutlinerGroup);
-			for (const ch of children) {
-				if (!ch?.uuid) continue;
-				capsules.push({
-					a_uuid: String(parent.uuid),
-					b_uuid: String(ch.uuid),
-					radius: Math.max(0.1, computeGroupApproxRadius(parent)),
-				});
-			}
-		}
-	}
-
-	return capsules;
+	return boxes;
 }
 
 function getNodeByUUID(uuid) {
@@ -214,59 +178,74 @@ function getNodeByUUID(uuid) {
 }
 
 /**
- * Resolve capsule defs into world endpoints for current pose.
- * @param {CapsuleDef[]} capsuleDefs
- * @returns {CapsuleWorld[]}
+ * Resolve box defs into world OBBs for current pose.
+ * @param {BoxDef[]} boxDefs
+ * @returns {BoxWorld[]}
  */
-export function computeCapsulesWorldNow(capsuleDefs) {
-	/** @type {CapsuleWorld[]} */
+export function computeBoxesWorldNow(boxDefs) {
+	/** @type {BoxWorld[]} */
 	const out = [];
-	if (!Array.isArray(capsuleDefs) || capsuleDefs.length === 0) return out;
-	
-	// Pre-fetch world matrices could be faster, but here we do it per capsule
-	for (const c of capsuleDefs) {
-		const aNode = getNodeByUUID(c.a_uuid);
-		if (!isOutlinerGroup(aNode)) continue;
-		const aPos = /** @type {[number, number, number]} */ (computeGroupPivotWorldCurrentPose(aNode)); // this returns Pivot in World
+	if (!Array.isArray(boxDefs) || boxDefs.length === 0) return out;
+	if (typeof THREE === 'undefined' || !THREE) return out;
 
-		let bPos = [0, 0, 0];
-		const hasOffsets = Array.isArray(c.start_offset_local) && c.start_offset_local.length >= 3 && Array.isArray(c.end_offset_local) && c.end_offset_local.length >= 3;
-		if (hasOffsets || c.dynamic_from_cube) {
-			try {
-				if (!aNode.mesh || typeof THREE === 'undefined') continue;
-				const q = aNode.mesh.getWorldQuaternion(new THREE.Quaternion());
-
-				let localA = /** @type {[number,number,number]} */ (c.start_offset_local);
-				let localB = /** @type {[number,number,number]} */ (c.end_offset_local);
-				let radius = Math.max(0.1, Number(c.radius) || 0);
-				if (c.dynamic_from_cube && c.cube_uuid) {
-					// Recompute from the cube itself so edits (from/to/rotation/origin) update live
-					const cubeNode = getNodeByUUID(c.cube_uuid);
-					if (!isCubeLike(cubeNode)) continue;
-					const seg = computeOrientedCubeCapsuleOffsetsLocal(aNode, cubeNode);
-					if (!seg) continue;
-					localA = seg.start;
-					localB = seg.end;
-					radius = seg.radius;
-				}
-				if (!Array.isArray(localA) || !Array.isArray(localB)) continue;
-
-				const va = new THREE.Vector3(localA[0], localA[1], localA[2]).applyQuaternion(q);
-				const vb = new THREE.Vector3(localB[0], localB[1], localB[2]).applyQuaternion(q);
-				const aw = /** @type {[number,number,number]} */ ([aPos[0] + va.x, aPos[1] + va.y, aPos[2] + va.z]);
-				bPos = /** @type {[number,number,number]} */ ([aPos[0] + vb.x, aPos[1] + vb.y, aPos[2] + vb.z]);
-				out.push({ a: aw, b: bPos, radius });
-				continue;
-			} catch (e) {
-				continue;
-			}
-		} else {
-			// Standard segment a -> b
-			const bNode = getNodeByUUID(c.b_uuid);
-			if (!isOutlinerGroup(bNode)) continue;
-			bPos = /** @type {[number, number, number]} */ (computeGroupPivotWorldCurrentPose(bNode));
+	for (const b of boxDefs) {
+		const gNode = getNodeByUUID(b.group_uuid);
+		if (!isOutlinerGroup(gNode)) continue;
+		const cNode = getNodeByUUID(b.cube_uuid);
+		if (!isCubeLike(cNode)) continue;
+		try {
+			if (!gNode.mesh) continue;
+			const gPos = /** @type {[number, number, number]} */ (computeGroupPivotWorldCurrentPose(gNode));
+			const q = gNode.mesh.getWorldQuaternion(new THREE.Quaternion());
+			const local = computeOrientedCubeBoxLocal(gNode, cNode);
+			if (!local) continue;
+			const cOff = local.center;
+			const cw = new THREE.Vector3(cOff[0], cOff[1], cOff[2]).applyQuaternion(q);
+			const centerWorld = /** @type {[number,number,number]} */ ([gPos[0] + cw.x, gPos[1] + cw.y, gPos[2] + cw.z]);
+			const ax = new THREE.Vector3(local.axes[0][0], local.axes[0][1], local.axes[0][2]).applyQuaternion(q).normalize();
+			const ay = new THREE.Vector3(local.axes[1][0], local.axes[1][1], local.axes[1][2]).applyQuaternion(q).normalize();
+			const az = new THREE.Vector3(local.axes[2][0], local.axes[2][1], local.axes[2][2]).applyQuaternion(q).normalize();
+			out.push({
+				center: centerWorld,
+				axes: /** @type {any} */ ([
+					[ax.x, ax.y, ax.z],
+					[ay.x, ay.y, ay.z],
+					[az.x, az.y, az.z],
+				]),
+				half: local.half,
+			});
+		} catch (e) {
+			// ignore
 		}
-		out.push({ a: aPos, b: bPos, radius: Math.max(0.1, Number(c.radius) || 0) });
+	}
+	return out;
+}
+
+/**
+ * Pack BoxWorld array into f32 layout for wasm query (15 floats per box):
+ * center(3), axes(9), half(3)
+ * @param {Array<{center:[number,number,number], axes:[[number,number,number],[number,number,number],[number,number,number]], half:[number,number,number]}>} boxesWorld
+ */
+export function packBoxesWorldToF32(boxesWorld) {
+	if (!Array.isArray(boxesWorld) || boxesWorld.length === 0) return new Float32Array(0);
+	const out = new Float32Array(boxesWorld.length * 15);
+	let o = 0;
+	for (const b of boxesWorld) {
+		const c = b?.center;
+		const axes = b?.axes;
+		const half = b?.half;
+		out[o++] = Number(c?.[0]) || 0;
+		out[o++] = Number(c?.[1]) || 0;
+		out[o++] = Number(c?.[2]) || 0;
+		for (let i = 0; i < 3; i++) {
+			const a = axes?.[i];
+			out[o++] = Number(a?.[0]) || 0;
+			out[o++] = Number(a?.[1]) || 0;
+			out[o++] = Number(a?.[2]) || 0;
+		}
+		out[o++] = Number(half?.[0]) || 0;
+		out[o++] = Number(half?.[1]) || 0;
+		out[o++] = Number(half?.[2]) || 0;
 	}
 	return out;
 }

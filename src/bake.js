@@ -9,11 +9,12 @@ import {
 } from './blockbench_api.js';
 import {
 	buildChainsFromRoot,
-	applyMovingCapsulesCollisionToChainAxis,
-} from './chains_and_collision.js';
-import { makeChainFollowerSolver } from './solver.js';
-import { radToDeg } from './math.js';
-import { buildCapsuleDefsFromRoot, computeCapsulesWorldNow, computeGroupApproxRadius } from './capsules.js';
+	// physics solving is now handled by Rapier in Rust/WASM
+} from './chains.js';
+import { flattenChainsWithParentAnchors } from './chain_flatten.js';
+import { degToRad, radToDeg } from './math.js';
+import { buildBoxDefsFromRoot, computeBoxesWorldNow, packBoxesWorldToF32, computeGroupApproxRadius } from './capsules.js';
+import { RapierWasmSolver } from './rapier_wasm_solver.js';
 
 function getGroupByUUID(uuid) {
 	try {
@@ -27,8 +28,19 @@ function getGroupByUUID(uuid) {
 	return null;
 }
 
+function getGroupsByUUIDs(uuids) {
+	/** @type {any[]} */
+	const out = [];
+	if (!Array.isArray(uuids) || uuids.length === 0) return out;
+	for (const u of uuids) {
+		const g = getGroupByUUID(String(u || ''));
+		if (g) out.push(g);
+	}
+	return out;
+}
+
 /**
- * @param {{start: number, end: number, fps: number, axis: 'x'|'y'|'z', overwrite: boolean}} opts
+ * @param {{start: number, end: number, fps: number, axis: 'x'|'y'|'z', overwrite: boolean, anchor_enabled?: boolean, anchor_time?: number}} opts
  */
 export async function bakeToKeyframes(opts) {
 	const animation = getSelectedAnimation();
@@ -41,7 +53,11 @@ export async function bakeToKeyframes(opts) {
 		showMessage('BBPhysic', '未找到被解算根组件（请先完成第二次解算：选择被解算物理部件）。');
 		return;
 	}
-	const roots = [targetRoot];
+	let roots = [targetRoot];
+	if (Boolean(state.config.cloth_enabled) && Array.isArray(state.config.cloth_roots_uuids) && state.config.cloth_roots_uuids.length) {
+		const captured = getGroupsByUUIDs(state.config.cloth_roots_uuids).filter(isOutlinerGroup);
+		if (captured.length) roots = captured;
+	}
 
 	const chains = roots
 		.flatMap((r) => buildChainsFromRoot(r, state.config.max_chain_depth))
@@ -51,17 +67,10 @@ export async function bakeToKeyframes(opts) {
 		return;
 	}
 
-	/** @type {any[]} */
-	const bones = [];
-	/** @type {number[]} */
-	const chainStarts = [];
-	/** @type {number[]} */
-	const chainLengths = [];
-	for (let ci = 0; ci < chains.length; ci++) {
-		chainStarts.push(bones.length);
-		chainLengths.push(chains[ci].length);
-		chains[ci].forEach((g) => bones.push(g));
-	}
+	const flat = flattenChainsWithParentAnchors(chains);
+	const bones = flat.bones;
+	const chainStarts = flat.chainStarts;
+	const chainLengths = flat.chainLengths;
 
 	const fps = Math.round(clampNumber(opts.fps, 1, 120, state.config.bake_fps));
 	const dt = 1 / fps;
@@ -72,28 +81,90 @@ export async function bakeToKeyframes(opts) {
 		showMessage('BBPhysic', '时间区间无效：end 必须大于 start。');
 		return;
 	}
+	const anchorEnabled = Boolean(opts.anchor_enabled);
+	const anchorTimeClamped = clampNumber(opts.anchor_time ?? start, start, end, start);
 
 	const axisIndex = opts.axis === 'x' ? 0 : opts.axis === 'y' ? 1 : 2;
-	const solveXYZ = Boolean(state.config.solve_xyz);
 	const logFrames = Math.max(0, Math.min(60, Math.round(Number(state.config.debug_log_frames) || 0)));
 	const shouldLog = (frameIndex) => state.config.debug_logging && frameIndex < logFrames;
 	const nearZero = (x) => Math.abs(Number(x) || 0) < 1e-6;
 	const allNearZero = (arr) => Array.isArray(arr) && arr.length > 0 && arr.every((v) => nearZero(v));
 
+	if (typeof THREE === 'undefined' || !THREE) {
+		showMessage('BBPhysic', 'Bake 需要 THREE（Blockbench 场景未就绪）。');
+		return;
+	}
+
+	function readWorldPose(group, outPos3, outQuat4) {
+		try {
+			if (group?.__bbp_anchor && group.__bbp_anchor_source) {
+				const isFixed = Boolean(group.__bbp_anchor_fixed);
+				if (isFixed) {
+					const cachedP = group.__bbp_anchor_cached_pos;
+					const cachedQ = group.__bbp_anchor_cached_quat;
+					if (
+						Array.isArray(cachedP) && cachedP.length === 3 &&
+						Array.isArray(cachedQ) && cachedQ.length === 4
+					) {
+						outPos3[0] = cachedP[0]; outPos3[1] = cachedP[1]; outPos3[2] = cachedP[2];
+						outQuat4[0] = cachedQ[0]; outQuat4[1] = cachedQ[1]; outQuat4[2] = cachedQ[2]; outQuat4[3] = cachedQ[3];
+						return true;
+					}
+				}
+
+				const src = group.__bbp_anchor_source;
+				if (src && src !== group) {
+					const p = [0, 0, 0];
+					const q = [0, 0, 0, 1];
+					if (readWorldPose(src, p, q)) {
+						if (isFixed) {
+							group.__bbp_anchor_cached_pos = [p[0], p[1], p[2]];
+							group.__bbp_anchor_cached_quat = [q[0], q[1], q[2], q[3]];
+						}
+						outPos3[0] = p[0]; outPos3[1] = p[1]; outPos3[2] = p[2];
+						outQuat4[0] = q[0]; outQuat4[1] = q[1]; outQuat4[2] = q[2]; outQuat4[3] = q[3];
+						return true;
+					}
+				}
+			}
+
+			const mesh = group?.mesh;
+			if (mesh && typeof mesh.getWorldPosition === 'function' && typeof mesh.getWorldQuaternion === 'function') {
+				const v3 = state.tmpThreeVec3 || (state.tmpThreeVec3 = new THREE.Vector3());
+				const q4 = state.tmpThreeQuat || (state.tmpThreeQuat = new THREE.Quaternion());
+				mesh.getWorldPosition(v3);
+				mesh.getWorldQuaternion(q4);
+				outPos3[0] = v3.x; outPos3[1] = v3.y; outPos3[2] = v3.z;
+				outQuat4[0] = q4.x; outQuat4[1] = q4.y; outQuat4[2] = q4.z; outQuat4[3] = q4.w;
+				return true;
+			}
+		} catch (e) {
+			// ignore
+		}
+		return false;
+	}
+
+	const parentIndex = flat.parentIndex;
+	const isRoot = flat.isRoot;
+
 	/** @type {number[]} */
 	const times = [];
 	/** @type {Array<Array<[number, number, number]>>} */
 	const targetRotations = [];
-	/** @type {number[][]} */
-	const targetAxis = solveXYZ ? [] : [];
-	/** @type {Array<Array<{a:[number,number,number], b:[number,number,number], radius:number}>>} */
-	const movingCapsulesWorldPerFrame = [];
+	/** @type {Array<Float32Array>} */
+	const targetWorldPosPerFrame = new Array(Math.ceil((end - start) * fps) + 2);
+	/** @type {Array<Float32Array>} */
+	const targetWorldQuatPerFrame = new Array(Math.ceil((end - start) * fps) + 2);
+	/** @type {Array<Float32Array>} */
+	const movingBoxesPackedPerFrame = new Array(Math.ceil((end - start) * fps) + 2);
 	const prevTime = (typeof Timeline !== 'undefined' && Timeline) ? Timeline.time : 0;
 
 	const movingRoot = state.config.moving_root_uuid ? getGroupByUUID(state.config.moving_root_uuid) : null;
-	const movingCapsuleDefs = movingRoot ? buildCapsuleDefsFromRoot(movingRoot) : [];
-	if (state.config.collision_enabled && (!movingRoot || movingCapsuleDefs.length === 0)) {
-		debugWarn('已启用碰撞，但未生成运动物件胶囊（请先完成第一次解算：选择运动物件）。本次 Bake 将不会执行碰撞约束。');
+	const movingBoxDefs = (state.config.collision_enabled && movingRoot)
+		? buildBoxDefsFromRoot(movingRoot)
+		: [];
+	if (state.config.collision_enabled && (!movingRoot || movingBoxDefs.length === 0)) {
+		debugWarn('已启用碰撞，但未生成运动物件 OBB 盒（请先完成第一次解算：选择运动物件）。本次 Bake 将不会执行碰撞。');
 	}
 
 	try {
@@ -110,7 +181,22 @@ export async function bakeToKeyframes(opts) {
 			}
 			const frameRot = bones.map((g) => readGroupRotationDeg(g));
 			targetRotations.push(frameRot);
-			if (!solveXYZ) targetAxis.push(frameRot.map((r) => r[axisIndex]));
+
+			// record root world poses for this sampled time
+			{
+				const pos = new Float32Array(3 * bones.length);
+				const quat = new Float32Array(4 * bones.length);
+				for (let b = 0; b < bones.length; b++) {
+					if (!isRoot[b]) continue;
+					const p = [0, 0, 0];
+					const q = [0, 0, 0, 1];
+					readWorldPose(bones[b], p, q);
+					pos[b * 3 + 0] = p[0]; pos[b * 3 + 1] = p[1]; pos[b * 3 + 2] = p[2];
+					quat[b * 4 + 0] = q[0]; quat[b * 4 + 1] = q[1]; quat[b * 4 + 2] = q[2]; quat[b * 4 + 3] = q[3];
+				}
+				targetWorldPosPerFrame[frameIndex] = pos;
+				targetWorldQuatPerFrame[frameIndex] = quat;
+			}
 			if (shouldLog(frameIndex)) {
 				const b0 = bones[0];
 				let meshRotDeg = null;
@@ -130,8 +216,11 @@ export async function bakeToKeyframes(opts) {
 					bone0_axis_deg: frameRot[0]?.[axisIndex],
 				});
 			}
-			if (state.config.collision_enabled && movingCapsuleDefs.length) {
-				movingCapsulesWorldPerFrame.push(computeCapsulesWorldNow(movingCapsuleDefs));
+			if (state.config.collision_enabled && movingBoxDefs.length) {
+				const w = computeBoxesWorldNow(movingBoxDefs);
+				movingBoxesPackedPerFrame[frameIndex] = packBoxesWorldToF32(w);
+			} else {
+				movingBoxesPackedPerFrame[frameIndex] = new Float32Array(0);
 			}
 
 			if (times.length % 30 === 0) await sleep0();
@@ -151,7 +240,7 @@ export async function bakeToKeyframes(opts) {
 
 	if (state.config.debug_logging) {
 		try {
-			const firstAxis = solveXYZ ? targetRotations?.[0]?.map((r) => r[axisIndex]) : targetAxis[0];
+			const firstAxis = targetRotations?.[0]?.map((r) => r[axisIndex]);
 			if (Array.isArray(firstAxis) && allNearZero(firstAxis)) {
 				debugWarn('采样得到的 axis 角全为 0（或接近 0）。这通常表示预览姿态没有刷新、骨骼没有旋转通道、或读取姿态来源不对。', {
 					axis: opts.axis,
@@ -164,53 +253,201 @@ export async function bakeToKeyframes(opts) {
 		}
 	}
 
-	/** @type {number[]} */
-	const restDeltaAxis = new Array(bones.length).fill(0);
-	/** @type {[number[], number[], number[]]|null} */
-	const restDeltaXYZ = solveXYZ ? [new Array(bones.length).fill(0), new Array(bones.length).fill(0), new Array(bones.length).fill(0)] : null;
-	const firstFrameRot = targetRotations[0];
-	const firstAxis = solveXYZ ? firstFrameRot.map((r) => r[axisIndex]) : targetAxis[0];
-	for (let c = 0; c < chainStarts.length; c++) {
-		const startIndex = chainStarts[c];
-		const len = chainLengths[c];
-		for (let local = 1; local < len; local++) {
-			const i = startIndex + local;
-			restDeltaAxis[i] = firstAxis[i] - firstAxis[i - 1];
-			if (restDeltaXYZ) {
-				restDeltaXYZ[0][i] = firstFrameRot[i][0] - firstFrameRot[i - 1][0];
-				restDeltaXYZ[1][i] = firstFrameRot[i][1] - firstFrameRot[i - 1][1];
-				restDeltaXYZ[2][i] = firstFrameRot[i][2] - firstFrameRot[i - 1][2];
+	let anchorIndex = 0;
+	if (anchorEnabled) {
+		let bestI = 0;
+		let bestAbs = Infinity;
+		for (let i = 0; i < times.length; i++) {
+			const d = Math.abs((times[i] || 0) - anchorTimeClamped);
+			if (d < bestAbs) {
+				bestAbs = d;
+				bestI = i;
 			}
 		}
+		anchorIndex = bestI;
 	}
 
-	const solver = makeChainFollowerSolver(chainStarts, chainLengths, restDeltaAxis, axisIndex);
-	solver.init(firstAxis);
-	const solversXYZ = solveXYZ && restDeltaXYZ
-		? [
-			makeChainFollowerSolver(chainStarts, chainLengths, restDeltaXYZ[0], 0),
-			makeChainFollowerSolver(chainStarts, chainLengths, restDeltaXYZ[1], 1),
-			makeChainFollowerSolver(chainStarts, chainLengths, restDeltaXYZ[2], 2),
-		]
-		: null;
-	if (solversXYZ) {
-		solversXYZ[0].init(firstFrameRot.map((r) => r[0]));
-		solversXYZ[1].init(firstFrameRot.map((r) => r[1]));
-		solversXYZ[2].init(firstFrameRot.map((r) => r[2]));
+	// ---------------------------
+	// Rapier/WASM solve (no JS solver fallback)
+	// ---------------------------
+
+	const clothLinkCount = (Boolean(state.config.cloth_enabled) && chains.length >= 2) ? chains.length : 0;
+	const rapier = new RapierWasmSolver(bones.length, movingBoxDefs.length, clothLinkCount);
+	try {
+		await rapier.init();
+	} catch (e) {
+		showMessage('BBPhysic', String(e?.message || e || 'WASM 初始化失败'));
+		return;
+	}
+	let v = rapier.views;
+	for (let i = 0; i < bones.length; i++) {
+		v.parent[i] = parentIndex[i] | 0;
+		v.root[i] = isRoot[i] ? 1 : 0;
+		v.radius[i] = Math.max(0, Number(computeGroupApproxRadius(bones[i])) || 0);
+		v.linvel[i * 3 + 0] = 0;
+		v.linvel[i * 3 + 1] = 0;
+		v.linvel[i * 3 + 2] = 0;
+		v.angvel[i * 3 + 0] = 0;
+		v.angvel[i * 3 + 1] = 0;
+		v.angvel[i * 3 + 2] = 0;
 	}
 
-	const collisionMemoryPerChain = chains.map(() => ({ lastNormalWorld: null }));
-	const collisionMemoryPerChainXYZ = solversXYZ
-		? [chains.map(() => ({ lastNormalWorld: null })), chains.map(() => ({ lastNormalWorld: null })), chains.map(() => ({ lastNormalWorld: null }))]
-		: null;
-	const tipRadiusPerChain = chains.map((chainGroups) => {
-		try {
-			const tip = chainGroups?.[chainGroups.length - 1];
-			return computeGroupApproxRadius(tip);
-		} catch (e) {
-			return 0;
+	// Initialize sim pose at anchor time from current scene world transforms.
+	try {
+		const tAnchor = times[anchorIndex] ?? times[0];
+		if (typeof Timeline !== 'undefined' && Timeline && typeof Timeline.setTime === 'function') {
+			Timeline.setTime(tAnchor, true);
 		}
-	});
+		if (typeof Animator !== 'undefined' && Animator && typeof Animator.preview === 'function') {
+			Animator.preview(true);
+		}
+		for (let b = 0; b < bones.length; b++) {
+			const p = [0, 0, 0];
+			const q = [0, 0, 0, 1];
+			readWorldPose(bones[b], p, q);
+			v.worldPos[b * 3 + 0] = p[0]; v.worldPos[b * 3 + 1] = p[1]; v.worldPos[b * 3 + 2] = p[2];
+			v.worldQuat[b * 4 + 0] = q[0]; v.worldQuat[b * 4 + 1] = q[1]; v.worldQuat[b * 4 + 2] = q[2]; v.worldQuat[b * 4 + 3] = q[3];
+			v.targetWorldPos[b * 3 + 0] = p[0]; v.targetWorldPos[b * 3 + 1] = p[1]; v.targetWorldPos[b * 3 + 2] = p[2];
+			v.targetWorldQuat[b * 4 + 0] = q[0]; v.targetWorldQuat[b * 4 + 1] = q[1]; v.targetWorldQuat[b * 4 + 2] = q[2]; v.targetWorldQuat[b * 4 + 3] = q[3];
+		}
+	} catch (e) {
+		// ignore
+	}
+
+	// Initialize clothLinks (tip ring) from anchor pose.
+	if (clothLinkCount > 0 && v.clothLinks && v.clothLinks.length >= 3 * clothLinkCount) {
+		for (let ci = 0; ci < chains.length; ci++) {
+			const aIdx = chainStarts[ci] + chainLengths[ci] - 1;
+			const ni = (ci + 1) % chains.length;
+			const bIdx = chainStarts[ni] + chainLengths[ni] - 1;
+			const ax = v.worldPos[aIdx * 3 + 0];
+			const ay = v.worldPos[aIdx * 3 + 1];
+			const az = v.worldPos[aIdx * 3 + 2];
+			const bx = v.worldPos[bIdx * 3 + 0];
+			const by = v.worldPos[bIdx * 3 + 1];
+			const bz = v.worldPos[bIdx * 3 + 2];
+			const dx = ax - bx;
+			const dy = ay - by;
+			const dz = az - bz;
+			const rest = Math.max(0.001, Math.sqrt(dx * dx + dy * dy + dz * dz));
+			v.clothLinks[ci * 3 + 0] = aIdx;
+			v.clothLinks[ci * 3 + 1] = bIdx;
+			v.clothLinks[ci * 3 + 2] = rest;
+		}
+	}
+
+	/** @type {Array<Array<[number,number,number]>>} */
+	const solvedRotationsPerFrame = new Array(times.length);
+
+	async function runPass(indices) {
+		const qParent = new THREE.Quaternion();
+		const qChild = new THREE.Quaternion();
+		const qLocal = new THREE.Quaternion();
+		const euler = new THREE.Euler(0, 0, 0, 'XYZ');
+		for (let k = 0; k < indices.length; k++) {
+			const i = indices[k];
+			// WASM memory may grow during earlier steps; refresh typed-array views before writing inputs.
+			rapier.ensureViews();
+			v = rapier.views;
+			const baseRotFrame = targetRotations[i];
+			for (let b = 0; b < bones.length; b++) {
+				v.targetLocal[b * 3 + 0] = degToRad(baseRotFrame[b][0]);
+				v.targetLocal[b * 3 + 1] = degToRad(baseRotFrame[b][1]);
+				v.targetLocal[b * 3 + 2] = degToRad(baseRotFrame[b][2]);
+			}
+			// roots: target world
+			const pos = targetWorldPosPerFrame[i];
+			const quat = targetWorldQuatPerFrame[i];
+			if (pos && quat) {
+				for (let b = 0; b < bones.length; b++) {
+					if (!isRoot[b]) continue;
+					v.targetWorldPos[b * 3 + 0] = pos[b * 3 + 0];
+					v.targetWorldPos[b * 3 + 1] = pos[b * 3 + 1];
+					v.targetWorldPos[b * 3 + 2] = pos[b * 3 + 2];
+					v.targetWorldQuat[b * 4 + 0] = quat[b * 4 + 0];
+					v.targetWorldQuat[b * 4 + 1] = quat[b * 4 + 1];
+					v.targetWorldQuat[b * 4 + 2] = quat[b * 4 + 2];
+					v.targetWorldQuat[b * 4 + 3] = quat[b * 4 + 3];
+				}
+			}
+
+			let boxCount = 0;
+			if (state.config.collision_enabled && movingBoxDefs.length) {
+				const packed = movingBoxesPackedPerFrame[i] || new Float32Array(0);
+				boxCount = Math.min(movingBoxDefs.length, Math.floor(packed.length / 15));
+				v.boxes.set(packed.subarray(0, 15 * boxCount));
+			}
+
+			rapier.step({
+				dt,
+				substeps: Math.max(1, Math.min(32, Math.round(Number(state.config.collision_iterations) || 4))),
+				gravityY: Number(state.config.gravity_y) || -9.81,
+				linDamping: Math.max(0, Number(state.config.lin_damping) || 0),
+				angDamping: Math.max(0, Number(state.config.ang_damping) || 0),
+				airDrag: Math.max(0, Number(state.config.air_drag) || 0),
+				inertiaScale: state.config.inertia_enabled ? Math.max(0, Math.min(5, Number(state.config.inertia_scale) || 1)) : 0,
+				motorStiffness: Math.max(0, Number(state.config.follow_strength) || 0),
+				motorDamping: Math.max(0, Number(state.config.follow_damping) || 0),
+				targetSelfCollision: Boolean(state.config.target_self_collision),
+				clothLinkCount,
+				boxCount,
+			});
+			// refresh views in case WASM memory buffer changed
+			v = rapier.views;
+			v.worldPos.set(v.outWorldPos);
+			v.worldQuat.set(v.outWorldQuat);
+
+			/** @type {Array<[number,number,number]>} */
+			const outRot = baseRotFrame.map((r) => [r[0], r[1], r[2]]);
+			for (let b = 0; b < bones.length; b++) {
+				const pIdx = parentIndex[b] | 0;
+				if (pIdx < 0) continue; // root kept by animation
+				qParent.set(v.worldQuat[pIdx * 4 + 0], v.worldQuat[pIdx * 4 + 1], v.worldQuat[pIdx * 4 + 2], v.worldQuat[pIdx * 4 + 3]);
+				qChild.set(v.worldQuat[b * 4 + 0], v.worldQuat[b * 4 + 1], v.worldQuat[b * 4 + 2], v.worldQuat[b * 4 + 3]);
+				qLocal.copy(qParent).invert().multiply(qChild);
+				euler.setFromQuaternion(qLocal, 'XYZ');
+				outRot[b] = [radToDeg(euler.x), radToDeg(euler.y), radToDeg(euler.z)];
+			}
+			solvedRotationsPerFrame[i] = outRot;
+			if (i % 30 === 0) await sleep0();
+		}
+	}
+
+	if (anchorEnabled) {
+		const forward = [];
+		for (let i = anchorIndex; i < times.length; i++) forward.push(i);
+		await runPass(forward);
+		// reset to anchor pose and run reverse indices
+		try {
+			for (let b = 0; b < bones.length; b++) {
+				v.linvel[b * 3 + 0] = 0; v.linvel[b * 3 + 1] = 0; v.linvel[b * 3 + 2] = 0;
+				v.angvel[b * 3 + 0] = 0; v.angvel[b * 3 + 1] = 0; v.angvel[b * 3 + 2] = 0;
+			}
+			const tAnchor = times[anchorIndex] ?? times[0];
+			if (typeof Timeline !== 'undefined' && Timeline && typeof Timeline.setTime === 'function') {
+				Timeline.setTime(tAnchor, true);
+			}
+			if (typeof Animator !== 'undefined' && Animator && typeof Animator.preview === 'function') {
+				Animator.preview(true);
+			}
+			for (let b = 0; b < bones.length; b++) {
+				const p = [0, 0, 0];
+				const q = [0, 0, 0, 1];
+				readWorldPose(bones[b], p, q);
+				v.worldPos[b * 3 + 0] = p[0]; v.worldPos[b * 3 + 1] = p[1]; v.worldPos[b * 3 + 2] = p[2];
+				v.worldQuat[b * 4 + 0] = q[0]; v.worldQuat[b * 4 + 1] = q[1]; v.worldQuat[b * 4 + 2] = q[2]; v.worldQuat[b * 4 + 3] = q[3];
+			}
+		} catch (e) {
+			// ignore
+		}
+		const backward = [];
+		for (let i = anchorIndex - 1; i >= 0; i--) backward.push(i);
+		await runPass(backward);
+	} else {
+		const forward = [];
+		for (let i = 0; i < times.length; i++) forward.push(i);
+		await runPass(forward);
+	}
 
 	/** @type {any[]} */
 	const createdKeyframes = [];
@@ -218,99 +455,19 @@ export async function bakeToKeyframes(opts) {
 	try {
 		notify('BBPhysic: 写入关键帧...', 2000);
 		for (let i = 0; i < times.length; i++) {
-			const baseRotFrame = targetRotations[i];
-			const capsNow = state.config.collision_enabled ? (movingCapsulesWorldPerFrame[i] || []) : [];
-			const capsPrev = state.config.collision_enabled ? (movingCapsulesWorldPerFrame[Math.max(0, i - 1)] || capsNow) : capsNow;
-
-			if (solveXYZ && solversXYZ) {
-				/** @type {Array<[number,number,number]>} */
-				const outRot = baseRotFrame.map((r) => [r[0], r[1], r[2]]);
-				for (let ax = 0; ax < 3; ax++) {
-					const targetsAx = baseRotFrame.map((r) => r[ax]);
-					const solved = solversXYZ[ax].step(targetsAx, dt);
-					if (state.config.collision_enabled && capsNow && capsNow.length) {
-						for (let c = 0; c < chains.length; c++) {
-							const startIndex = chainStarts[c];
-							const len = chainLengths[c];
-							const chainGroups = chains[c];
-							const baseEuler = outRot.slice(startIndex, startIndex + len);
-							const axisAngles = solved.slice(startIndex, startIndex + len);
-							const mem = collisionMemoryPerChainXYZ?.[ax]?.[c] || null;
-							const tipR = tipRadiusPerChain[c] || 0;
-							applyMovingCapsulesCollisionToChainAxis(chainGroups, baseEuler, axisAngles, ax, capsPrev, capsNow, tipR, mem);
-							for (let j = 0; j < len; j++) solved[startIndex + j] = axisAngles[j];
-						}
-					}
-					for (let b = 0; b < outRot.length; b++) outRot[b][ax] = solved[b];
-				}
-				if (shouldLog(i)) {
-					debugLog('solve_xyz', {
-						frame: i,
-						t: Number(times[i].toFixed(6)),
-						capsule_count: capsNow?.length || 0,
-					});
-				}
-
-				for (let b = 0; b < bones.length; b++) {
-					const boneAnimator = animation.getBoneAnimator(bones[b]);
-					const kf = addRotationKeyframe(boneAnimator, times[i], outRot[b]);
-					if (opts.overwrite && kf && typeof kf.replaceOthers === 'function') {
-						try {
-							kf.replaceOthers(null);
-						} catch (e) {
-							// ignore
-						}
-					}
-					if (kf) createdKeyframes.push(kf);
-				}
-			} else {
-				const frameAxis = targetAxis[i];
-				const solvedAxis = solver.step(frameAxis, dt);
-			if (shouldLog(i)) {
-				debugLog('solve_pre_collision', {
-					frame: i,
-					t: Number(times[i].toFixed(6)),
-					target_axis_deg_sample: frameAxis?.slice(0, Math.min(6, bones.length)),
-					solved_axis_deg_sample: solvedAxis?.slice(0, Math.min(6, bones.length)),
-				});
-			}
-
-				if (state.config.collision_enabled && capsNow && capsNow.length) {
-					for (let c = 0; c < chains.length; c++) {
-						const startIndex = chainStarts[c];
-						const len = chainLengths[c];
-						const chainGroups = chains[c];
-						const baseEuler = targetRotations[i].slice(startIndex, startIndex + len);
-						const axisAngles = solvedAxis.slice(startIndex, startIndex + len);
-						const mem = collisionMemoryPerChain[c];
-						const tipR = tipRadiusPerChain[c] || 0;
-						applyMovingCapsulesCollisionToChainAxis(chainGroups, baseEuler, axisAngles, axisIndex, capsPrev, capsNow, tipR, mem);
-						for (let j = 0; j < len; j++) solvedAxis[startIndex + j] = axisAngles[j];
-					}
-					if (shouldLog(i)) {
-						debugLog('collision_capsules', {
-							frame: i,
-							t: Number(times[i].toFixed(6)),
-							capsule_count: capsNow.length,
-						});
+			const outRot = solvedRotationsPerFrame[i] || targetRotations[i];
+			for (let b = 0; b < bones.length; b++) {
+				if (bones[b]?.__bbp_anchor) continue;
+				const boneAnimator = animation.getBoneAnimator(bones[b]);
+				const kf = addRotationKeyframe(boneAnimator, times[i], outRot[b]);
+				if (opts.overwrite && kf && typeof kf.replaceOthers === 'function') {
+					try {
+						kf.replaceOthers(null);
+					} catch (e) {
+						// ignore
 					}
 				}
-
-				for (let b = 0; b < bones.length; b++) {
-					const boneAnimator = animation.getBoneAnimator(bones[b]);
-					const base = targetRotations[i][b];
-					const out = [base[0], base[1], base[2]];
-					out[axisIndex] = solvedAxis[b];
-					const kf = addRotationKeyframe(boneAnimator, times[i], out);
-					if (opts.overwrite && kf && typeof kf.replaceOthers === 'function') {
-						try {
-							kf.replaceOthers(null);
-						} catch (e) {
-							// ignore
-						}
-					}
-					if (kf) createdKeyframes.push(kf);
-				}
+				if (kf) createdKeyframes.push(kf);
 			}
 
 			if (i % 30 === 0) {

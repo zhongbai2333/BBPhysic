@@ -103,7 +103,8 @@ export async function tryInitWasm() {
 	if (state.wasmInitTried) return state.wasm;
 	state.wasmInitTried = true;
 	state.wasm = { ok: false };
-	if (!state.config.use_wasm) return state.wasm;
+	// Rapier-based full solver requires WASM.
+	// (We no longer support JS fallback for the solver.)
 	if (typeof WebAssembly === 'undefined') return state.wasm;
 
 	try {
@@ -144,7 +145,7 @@ export async function tryInitWasm() {
 		const { instance } = await WebAssembly.instantiate(bytes, {});
 		const exports = instance.exports;
 		const memory = exports.memory;
-		if (!exports || !memory || typeof exports.bbp_solve_step !== 'function') {
+		if (!exports || !memory || typeof exports.bbp_alloc !== 'function' || typeof exports.bbp_rapier_step !== 'function') {
 			return state.wasm;
 		}
 		state.wasm = { instance, exports, memory, ok: true };
