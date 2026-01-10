@@ -33,6 +33,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "bbphysic-wasm"
 version = "0.0.1"
 dependencies = [
+ "glam 0.30.10",
  "rapier3d",
 ]
 

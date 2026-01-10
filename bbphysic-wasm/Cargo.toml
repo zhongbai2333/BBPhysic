@@ -8,3 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rapier3d = "0.32.0"
+glam = "0.30"

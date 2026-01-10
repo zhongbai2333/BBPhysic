@@ -551,6 +551,17 @@ export function updateWireframeOnce(force = false) {
       const groups = collectGroupsDepthFirst(moving);
       const bones = groups.filter(isBoneGroup);
       const toShow = bones.length ? bones : groups;
+      
+      // Debug logging
+      console.log('[BBPhysic Wireframe] Joint marker debug:', {
+        rootGroup: (moving as any).name || (moving as any).uuid,
+        totalGroups: groups.length,
+        totalBones: bones.length,
+        toShow: toShow.length,
+        groupNames: groups.map((g: any) => g.name || g.uuid),
+        boneNames: bones.map((g: any) => g.name || g.uuid),
+      });
+      
       for (const g of toShow) buildGroupPivotMarker(g, color);
 
       // If still only one marker shows up, it's either traversal failing (unexpected children shape)

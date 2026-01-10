@@ -3,6 +3,49 @@ export interface BBPhysicWasmExports {
   bbp_world_create: (gravityY: number) => number;
   bbp_world_step: (handle: number, dt: number) => void;
   bbp_world_free: (handle: number) => void;
+  
+  // 刚体管理
+  bbp_add_rigid_body: (
+    handle: number,
+    bodyType: number,
+    posX: number,
+    posY: number,
+    posZ: number,
+    rotX: number,
+    rotY: number,
+    rotZ: number,
+    rotW: number
+  ) => number;
+  
+  // 碰撞体管理
+  bbp_add_box_collider: (
+    handle: number,
+    bodyId: number,
+    hx: number,
+    hy: number,
+    hz: number
+  ) => number;
+  
+  // Transform 获取/设置
+  bbp_get_transform: (handle: number, bodyId: number) => number;
+  bbp_free_transform: (ptr: number) => void;
+  bbp_set_transform: (
+    handle: number,
+    bodyId: number,
+    posX: number,
+    posY: number,
+    posZ: number,
+    rotX: number,
+    rotY: number,
+    rotZ: number,
+    rotW: number
+  ) => number;
+  
+  // 查询
+  bbp_get_body_count: (handle: number) => number;
+  
+  // WASM memory access
+  memory: WebAssembly.Memory;
 }
 
 export interface BBPhysicWasmModule {
