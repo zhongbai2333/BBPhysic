@@ -1,5 +1,5 @@
 import type { BBPhysicWasmExports } from '../wasm/loader';
-import { loadBBPhysicWasm } from '../wasm/loader';
+import { ensureBBPhysicWasmModule, clearBBPhysicWasmModule, setBBPhysicPlugin } from '../wasm/runtime';
 import { registerBBPhysicTranslations, t } from '../i18n';
 import { openBBPhysicSettingsDialog } from '../ui/settings_dialog';
 import { openBBPhysicSolveDialog } from '../ui/solve_dialog';
@@ -177,12 +177,15 @@ export function registerBBPhysicPlugin() {
     async onload(this: Plugin) {
       registerBBPhysicTranslations();
 
+      // Make plugin reference available to preview/wasm loader.
+      setBBPhysicPlugin(this);
+
       // UI first (menu entries are available even if WASM fails)
       safeDeleteAll(uiDeletables);
       registerTopMenu(this);
 
       try {
-        const wasm = await loadBBPhysicWasm(this);
+          const wasm = await ensureBBPhysicWasmModule(this);
         const abi = wasm.exports.bbp_abi_version();
         wasmExports = wasm.exports;
         Blockbench.showQuickMessage(`BBPhysic wasm 已加载 (ABI ${abi})`, 1500);
@@ -199,6 +202,8 @@ export function registerBBPhysicPlugin() {
         // ignore
       }
       wasmExports = undefined;
+        clearBBPhysicWasmModule();
+        setBBPhysicPlugin(null);
       selectedSolveRootUuid = null;
       previewEnabled = false;
       debugWireframeEnabled = false;

@@ -3,7 +3,7 @@
  * Implements OBB-based physics simulation with live visualization
  */
 
-import { loadBBPhysicWasm } from '../wasm/loader';
+import { ensureBBPhysicWasmModule } from '../wasm/runtime';
 import { PhysicsWorld, RigidBodyType, type Transform } from './world';
 import { getPreparedPhysicsJob, type PreparedCube } from './prep';
 import type { Vec3 } from './types';
@@ -124,9 +124,17 @@ async function initializePhysicsWorld(): Promise<boolean> {
     }
 
     // Load WASM module
-    const wasmModule = await loadBBPhysicWasm({} as any); // TODO: pass plugin reference
-    if (!wasmModule) {
-      console.error('[BBPhysic Preview] Failed to load WASM module');
+    let wasmModule;
+    try {
+      // Reuse the module loaded during plugin onload.
+      wasmModule = await ensureBBPhysicWasmModule();
+    } catch (e) {
+      console.error('[BBPhysic Preview] Failed to ensure WASM module', e);
+      try {
+        Blockbench.showQuickMessage('BBPhysic: wasm 未加载/路径错误，无法启动预览', 3500);
+      } catch {
+        // ignore
+      }
       return false;
     }
 
