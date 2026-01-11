@@ -7,16 +7,23 @@ type BBPhysicSettings = {
   gravity: [number, number, number];
   timestep: number;
   iterations: number;
+  group_joint_type: 'spherical' | 'revolute';
   linear_damping: number;
   max_linear_velocity: number;
   max_angular_velocity: number;
   max_step_displacement: number;
 
+  // Drag interaction (preview)
+  drag_strength: number;
+  drag_max_speed: number;
+  drag_inertia: boolean;
+  drag_inertia_scale: number;
+
   collision_layer: string;
   collision_mask: string;
-  self_collision: boolean;
   friction: number;
   restitution: number;
+  ground_height: number;
 
   wireframe_color: string;
   wireframe_opacity: number;
@@ -36,16 +43,22 @@ const DEFAULT_SETTINGS: BBPhysicSettings = {
   gravity: [0, -9.81, 0],
   timestep: 1 / 60,
   iterations: 8,
+  group_joint_type: 'spherical',
   linear_damping: 0.05,
   max_linear_velocity: 100,
   max_angular_velocity: 50,
   max_step_displacement: 2,
 
+  drag_strength: 24,
+  drag_max_speed: 18,
+  drag_inertia: false,
+  drag_inertia_scale: 0.6,
+
   collision_layer: 'default',
   collision_mask: 'default',
-  self_collision: false,
   friction: 0.5,
   restitution: 0.0,
+  ground_height: 0,
 
   wireframe_color: '#00c8ff',
   wireframe_opacity: 0.5,
@@ -76,6 +89,16 @@ function loadSettings(): BBPhysicSettings {
 function saveSettings(settings: BBPhysicSettings) {
   try {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // ignore
+  }
+}
+
+function setGlobalSettingsForPreview(settings: BBPhysicSettings) {
+  // Preview module reads settings from window.BBPhysicSettings.
+  // Keep it synced so preview can use the latest values.
+  try {
+    (window as any).BBPhysicSettings = settings;
   } catch {
     // ignore
   }
@@ -120,6 +143,7 @@ let rafHandle: number | null = null;
 let fpsLastTs = 0;
 let fpsFrames = 0;
 let fpsValue = 0;
+let currentPage: string = 'general';
 
 export function openBBPhysicSettingsDialog() {
   ensureStylesInjected();
@@ -142,12 +166,23 @@ export function openBBPhysicSettingsDialog() {
       'gravity',
       'timestep',
       'iterations',
+      'group_joint_type',
       'linear_damping',
       'max_linear_velocity',
       'max_angular_velocity',
       'max_step_displacement',
+      'drag_strength',
+      'drag_max_speed',
+      'drag_inertia',
+      'drag_inertia_scale',
     ],
-    collision: ['collision_layer', 'collision_mask', 'self_collision', 'friction', 'restitution'],
+    collision: [
+      'collision_layer',
+      'collision_mask',
+      'friction',
+      'restitution',
+      'ground_height',
+    ],
     display: [
       'wireframe_color',
       'wireframe_opacity',
@@ -165,16 +200,22 @@ export function openBBPhysicSettingsDialog() {
     gravity: DEFAULT_SETTINGS.gravity,
     timestep: DEFAULT_SETTINGS.timestep,
     iterations: DEFAULT_SETTINGS.iterations,
+    group_joint_type: DEFAULT_SETTINGS.group_joint_type,
     linear_damping: DEFAULT_SETTINGS.linear_damping,
     max_linear_velocity: DEFAULT_SETTINGS.max_linear_velocity,
     max_angular_velocity: DEFAULT_SETTINGS.max_angular_velocity,
     max_step_displacement: DEFAULT_SETTINGS.max_step_displacement,
 
+    drag_strength: DEFAULT_SETTINGS.drag_strength,
+    drag_max_speed: DEFAULT_SETTINGS.drag_max_speed,
+    drag_inertia: DEFAULT_SETTINGS.drag_inertia,
+    drag_inertia_scale: DEFAULT_SETTINGS.drag_inertia_scale,
+
     collision_layer: DEFAULT_SETTINGS.collision_layer,
     collision_mask: DEFAULT_SETTINGS.collision_mask,
-    self_collision: DEFAULT_SETTINGS.self_collision,
     friction: DEFAULT_SETTINGS.friction,
     restitution: DEFAULT_SETTINGS.restitution,
+    ground_height: DEFAULT_SETTINGS.ground_height,
 
     wireframe_color: DEFAULT_SETTINGS.wireframe_color,
     wireframe_opacity: DEFAULT_SETTINGS.wireframe_opacity,
@@ -217,11 +258,25 @@ export function openBBPhysicSettingsDialog() {
     },
     iterations: {
       label: t('bbphysic.settings.iterations', '迭代次数'),
+      description: t('bbphysic.settings.iterations.desc', '关节/碰撞约束的求解迭代次数。越大越稳定，但更耗性能。'),
       type: 'number',
       min: 1,
       step: 1,
       force_step: true,
       value: settings.iterations,
+    },
+    group_joint_type: {
+      label: t('bbphysic.settings.group_joint_type', '关节类型（Group 层级）'),
+      description: t(
+        'bbphysic.settings.group_joint_type.desc',
+        '用于“Group 骨架”层级连接：球关节=任意方向旋转；刚性旋转关节=只允许绕轴旋转（更像铰链）。'
+      ),
+      type: 'select',
+      value: (settings as any).group_joint_type ?? 'spherical',
+      options: {
+        spherical: t('bbphysic.settings.group_joint_type.spherical', '球关节（全向旋转）'),
+        revolute: t('bbphysic.settings.group_joint_type.revolute', '刚性旋转关节（仅绕轴旋转）'),
+      },
     },
     linear_damping: {
       label: t('bbphysic.settings.linear_damping', '线性阻尼'),
@@ -256,6 +311,42 @@ export function openBBPhysicSettingsDialog() {
       value: settings.max_step_displacement,
     },
 
+    drag_strength: {
+      label: t('bbphysic.settings.drag_strength', '拖拽力度'),
+      description: t('bbphysic.settings.drag_strength.desc', '拖拽跟手的响应强度（越大越跟手；也会影响惯性速度的上限）'),
+      type: 'number',
+      min: 1,
+      max: 200,
+      step: 1,
+      force_step: true,
+      value: (settings as any).drag_strength ?? DEFAULT_SETTINGS.drag_strength,
+    },
+    drag_max_speed: {
+      label: t('bbphysic.settings.drag_max_speed', '拖拽最大速度'),
+      description: t('bbphysic.settings.drag_max_speed.desc', '限制拖拽物体的最大移动速度（单位/秒），可减少关节被拉炸'),
+      type: 'number',
+      min: 0,
+      max: 100,
+      step: 0.1,
+      value: (settings as any).drag_max_speed ?? DEFAULT_SETTINGS.drag_max_speed,
+    },
+    drag_inertia: {
+      label: t('bbphysic.settings.drag_inertia', '释放惯性'),
+      description: t('bbphysic.settings.drag_inertia.desc', '松开鼠标时把拖拽速度作为初速度（更有“甩出去”的感觉）'),
+      type: 'checkbox',
+      style: 'checkbox',
+      value: Boolean((settings as any).drag_inertia ?? DEFAULT_SETTINGS.drag_inertia),
+    },
+    drag_inertia_scale: {
+      label: t('bbphysic.settings.drag_inertia_scale', '惯性倍率'),
+      description: t('bbphysic.settings.drag_inertia_scale.desc', '开启“释放惯性”时：初速度 = 拖拽速度 × 倍率（用于减小松手弹飞）'),
+      type: 'number',
+      min: 0,
+      max: 3,
+      step: 0.05,
+      value: (settings as any).drag_inertia_scale ?? DEFAULT_SETTINGS.drag_inertia_scale,
+    },
+
     collision_layer: {
       label: t('bbphysic.settings.collision_layer', '碰撞层'),
       type: 'select',
@@ -276,12 +367,6 @@ export function openBBPhysicSettingsDialog() {
       type: 'text',
       value: settings.collision_mask,
     },
-    self_collision: {
-      label: t('bbphysic.settings.self_collision', '启用自碰撞'),
-      type: 'checkbox',
-      style: 'toggle_switch',
-      value: settings.self_collision,
-    },
     friction: {
       label: t('bbphysic.settings.friction', '摩擦系数'),
       type: 'number',
@@ -295,6 +380,14 @@ export function openBBPhysicSettingsDialog() {
       min: 0,
       step: 0.01,
       value: settings.restitution,
+    },
+
+    ground_height: {
+      label: t('bbphysic.settings.ground_height', '地面高度'),
+      description: t('bbphysic.settings.ground_height.desc', '预览模式会生成一块“地面”，其顶部高度为该值（Y）'),
+      type: 'number',
+      step: 0.1,
+      value: settings.ground_height,
     },
 
     wireframe_color: {
@@ -364,6 +457,19 @@ export function openBBPhysicSettingsDialog() {
     }
   };
 
+  const reapplyCurrentPageVisibilitySoon = () => {
+    if (!settingsDialog) return;
+    // setFormValues/onFormChange can recreate form DOM; defer so getFormBar finds the new elements.
+    try {
+      requestAnimationFrame(() => {
+        if (!settingsDialog) return;
+        setPageVisibility(settingsDialog, currentPage);
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   const stopFpsLoop = () => {
     if (rafHandle != null) {
       cancelAnimationFrame(rafHandle);
@@ -388,6 +494,7 @@ export function openBBPhysicSettingsDialog() {
           const current = settingsDialog!.getFormResult();
           const enabled = Boolean((current as any).debug_wireframe);
           settingsDialog!.setFormValues({ wireframe_fps: enabled ? String(fpsValue) : '--' }, false);
+          reapplyCurrentPageVisibilitySoon();
         } catch {
           // ignore
         }
@@ -430,12 +537,15 @@ export function openBBPhysicSettingsDialog() {
         },
       },
       onPageSwitch(page) {
-        setPageVisibility(settingsDialog!, page);
+        currentPage = String(page || 'general');
+        setPageVisibility(settingsDialog!, currentPage);
       },
     },
     onOpen() {
       // Refresh values from storage each open
       settings = loadSettings();
+      setGlobalSettingsForPreview(settings);
+      currentPage = 'general';
       settingsDialog!.setFormValues(
         {
           enabled: settings.enabled,
@@ -443,15 +553,20 @@ export function openBBPhysicSettingsDialog() {
           gravity: settings.gravity,
           timestep: settings.timestep,
           iterations: settings.iterations,
+          group_joint_type: (settings as any).group_joint_type ?? 'spherical',
           linear_damping: settings.linear_damping,
           max_linear_velocity: settings.max_linear_velocity,
           max_angular_velocity: settings.max_angular_velocity,
           max_step_displacement: settings.max_step_displacement,
+          drag_strength: (settings as any).drag_strength ?? DEFAULT_SETTINGS.drag_strength,
+          drag_max_speed: (settings as any).drag_max_speed ?? DEFAULT_SETTINGS.drag_max_speed,
+          drag_inertia: Boolean((settings as any).drag_inertia ?? DEFAULT_SETTINGS.drag_inertia),
+          drag_inertia_scale: (settings as any).drag_inertia_scale ?? DEFAULT_SETTINGS.drag_inertia_scale,
           collision_layer: settings.collision_layer,
           collision_mask: settings.collision_mask,
-          self_collision: settings.self_collision,
           friction: settings.friction,
           restitution: settings.restitution,
+          ground_height: settings.ground_height,
           wireframe_color: settings.wireframe_color,
           wireframe_opacity: settings.wireframe_opacity,
           show_joint_markers: settings.show_joint_markers,
@@ -462,6 +577,7 @@ export function openBBPhysicSettingsDialog() {
         },
         false
       );
+      reapplyCurrentPageVisibilitySoon();
 
       startFpsLoop();
     },
@@ -499,13 +615,15 @@ export function openBBPhysicSettingsDialog() {
           ev.preventDefault();
           ev.stopPropagation();
           settingsDialog!.setFormValues({ [key]: defaultsByKey[key] }, true);
+          reapplyCurrentPageVisibilitySoon();
         });
 
         barEl.appendChild(btn);
       }
 
       // Initial page visibility
-      setPageVisibility(settingsDialog!, 'general');
+      currentPage = 'general';
+      setPageVisibility(settingsDialog!, currentPage);
     },
     onFormChange(result) {
       // Persist
@@ -515,15 +633,21 @@ export function openBBPhysicSettingsDialog() {
         gravity: (result.gravity as any) as [number, number, number],
         timestep: Number(result.timestep),
         iterations: Number(result.iterations),
+        group_joint_type: (String((result as any).group_joint_type || 'spherical') as any) as BBPhysicSettings['group_joint_type'],
         linear_damping: Number(result.linear_damping),
         max_linear_velocity: Number((result as any).max_linear_velocity),
         max_angular_velocity: Number((result as any).max_angular_velocity),
         max_step_displacement: Number((result as any).max_step_displacement),
+
+        drag_strength: Number((result as any).drag_strength),
+        drag_max_speed: Number((result as any).drag_max_speed),
+        drag_inertia: Boolean((result as any).drag_inertia),
+        drag_inertia_scale: Number((result as any).drag_inertia_scale),
         collision_layer: String((result as any).collision_layer || DEFAULT_SETTINGS.collision_layer),
         collision_mask: String((result as any).collision_mask || DEFAULT_SETTINGS.collision_mask),
-        self_collision: Boolean((result as any).self_collision),
         friction: Number((result as any).friction),
         restitution: Number((result as any).restitution),
+        ground_height: Number((result as any).ground_height),
         wireframe_color: String((result as any).wireframe_color),
         wireframe_opacity: Number((result as any).wireframe_opacity),
         show_joint_markers: Boolean((result as any).show_joint_markers),
@@ -532,6 +656,7 @@ export function openBBPhysicSettingsDialog() {
         debug_log_level: (result.debug_log_level as any) as BBPhysicSettings['debug_log_level'],
       };
       saveSettings(settings);
+      setGlobalSettingsForPreview(settings);
 
       // Keep FPS field consistent when toggling wireframe debug
       try {
@@ -539,6 +664,7 @@ export function openBBPhysicSettingsDialog() {
           { wireframe_fps: settings.debug_wireframe ? String(fpsValue || '--') : '--' },
           false
         );
+        reapplyCurrentPageVisibilitySoon();
       } catch {
         // ignore
       }

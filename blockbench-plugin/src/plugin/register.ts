@@ -19,6 +19,82 @@ let selectedSolveRootUuid: string | null = null;
 let previewEnabled = false;
 let debugWireframeEnabled = false;
 
+let physicsMode: any | null = null;
+let physicsDragTool: any | null = null;
+
+function safeDeleteBarItemById(id: string) {
+  try {
+    const it = (BarItems as any)?.[id];
+    if (it && typeof it.delete === 'function') {
+      it.delete();
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function safeDeleteModeById(id: string) {
+  try {
+    const it = (Modes as any)?.options?.[id];
+    if (it && typeof it.delete === 'function') {
+      it.delete();
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function removeToolButtonsFromDom(toolId: string, keepOne: boolean) {
+  if (typeof document === 'undefined') return;
+  try {
+    const nodes = Array.from(document.querySelectorAll(`[id="${toolId}"]`));
+    if (nodes.length <= 1) return;
+    const start = keepOne ? 1 : 0;
+    for (let i = nodes.length - 1; i >= start; i--) {
+      const el = nodes[i] as any as HTMLElement;
+      el?.remove?.();
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function cleanupStalePhysicsUI() {
+  // Be robust against Blockbench UI caching or failed previous unload.
+  safeDeleteBarItemById('bbphysic_drag');
+  safeDeleteModeById('bbphysic_physics');
+  // If Blockbench ended up rendering duplicates, remove all remnants.
+  removeToolButtonsFromDom('bbphysic_drag', false);
+}
+
+function refreshModesBarUI() {
+  const attempt = () => {
+    try {
+      const modes: any = (globalThis as any).Modes;
+      const vue = modes?.vue;
+      vue?.$forceUpdate?.();
+      vue?.$nextTick?.(() => {
+        try {
+          vue?.$forceUpdate?.();
+        } catch {
+          // ignore
+        }
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  attempt();
+  try {
+    setTimeout(attempt, 0);
+    setTimeout(attempt, 100);
+    setTimeout(attempt, 500);
+  } catch {
+    // ignore
+  }
+}
+
 function safeDeleteAll(items: Deletable[]) {
   for (const it of items.splice(0, items.length)) {
     try {
@@ -26,6 +102,101 @@ function safeDeleteAll(items: Deletable[]) {
     } catch {
       // ignore
     }
+  }
+}
+
+function registerPhysicsMode(plugin: Plugin) {
+  // Blockbench supports custom modes via `new Mode(id, options)`.
+  // We use it as a "Physics Mode" entry: onSelect starts preview, onUnselect stops.
+  try {
+    const existing = (Modes as any)?.options?.['bbphysic_physics'];
+    if (existing) {
+      physicsMode = existing;
+      return;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const ModeCtor = (globalThis as any).Mode as any;
+    if (typeof ModeCtor !== 'function') return;
+
+    physicsMode = new ModeCtor('bbphysic_physics', {
+      name: t('bbphysic.mode.physics', '物理'),
+      icon: 'sports_mma',
+      // Use a built-in-ish category so it shows up in the top-right mode bar consistently.
+      category: 'edit',
+      // In physics mode, default to the custom drag tool so left-drag can be captured reliably.
+      default_tool: 'bbphysic_drag',
+      selectElements: true,
+      onSelect: async () => {
+        try {
+          await startPhysicsPreview();
+        } catch {
+          // ignore
+        }
+      },
+      onUnselect: () => {
+        try {
+          stopPhysicsPreview();
+        } catch {
+          // ignore
+        }
+      },
+    });
+    try {
+      (physicsMode as any).plugin = (plugin as any).id;
+    } catch {
+      // ignore
+    }
+    uiDeletables.push(physicsMode as any);
+    refreshModesBarUI();
+  } catch (e) {
+    console.warn('[BBPhysic] Failed to register physics mode', e);
+  }
+}
+
+function registerPhysicsDragTool(plugin: Plugin) {
+  try {
+    const existing = (BarItems as any)?.['bbphysic_drag'];
+    if (existing) {
+      physicsDragTool = existing;
+      // In case UI duplicated, keep only one button.
+      removeToolButtonsFromDom('bbphysic_drag', true);
+      return;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const ToolCtor = (globalThis as any).Tool as any;
+    if (typeof ToolCtor !== 'function') return;
+
+    physicsDragTool = new ToolCtor('bbphysic_drag', {
+      name: t('bbphysic.tool.drag', '物理拖拽'),
+      icon: 'pan_tool',
+      category: 'BBPhysic',
+      modes: ['bbphysic_physics'],
+      selectElements: true,
+      click() {
+        // Tool selection is handled by Blockbench; input is handled in preview.ts.
+      },
+    });
+
+    try {
+      (physicsDragTool as any).plugin = (plugin as any).id;
+    } catch {
+      // ignore
+    }
+
+    uiDeletables.push(physicsDragTool as any);
+    // NOTE: Blockbench will place tools into the toolbox automatically.
+    // Explicit Toolbox.add can cause duplicate buttons depending on BB version.
+    removeToolButtonsFromDom('bbphysic_drag', true);
+  } catch (e) {
+    console.warn('[BBPhysic] Failed to register physics drag tool', e);
   }
 }
 
@@ -110,6 +281,29 @@ function registerTopMenu(plugin: Plugin) {
   });
   actions.push(actionReset);
 
+  const actionEnterPhysicsMode = new Action('bbphysic_menu_physics_mode', {
+    name: t('bbphysic.action.physics_mode', '进入物理模式'),
+    icon: 'sports_mma',
+    category: 'Tools',
+    click() {
+      try {
+        const m = (Modes as any)?.options?.['bbphysic_physics'] ?? physicsMode;
+        if (m && typeof m.select === 'function') {
+          m.select();
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        Blockbench.showQuickMessage('物理模式未注册（可能是 Blockbench 版本较旧）', 2000);
+      } catch {
+        // ignore
+      }
+    },
+  });
+  actions.push(actionEnterPhysicsMode);
+
   const actionWireframe = new Toggle('bbphysic_menu_wireframe', {
     name: t('bbphysic.action.wireframe', '线框标出关节/碰撞体'),
     icon: 'grid_on',
@@ -132,6 +326,7 @@ function registerTopMenu(plugin: Plugin) {
     actionPreview,
     actionPause,
     actionReset,
+    actionEnterPhysicsMode,
     '_', // Separator
     actionWireframe,
   ]);
@@ -177,11 +372,28 @@ export function registerBBPhysicPlugin() {
     async onload(this: Plugin) {
       registerBBPhysicTranslations();
 
+      // Hard cleanup first: avoids duplicated tools/modes in some Blockbench reload paths.
+      cleanupStalePhysicsUI();
+
+      // Make settings available globally for preview without requiring opening the settings dialog.
+      try {
+        const raw = localStorage.getItem('bbphysic.settings.v1');
+        (window as any).BBPhysicSettings = raw ? JSON.parse(raw) : {};
+      } catch {
+        try {
+          (window as any).BBPhysicSettings = {};
+        } catch {
+          // ignore
+        }
+      }
+
       // Make plugin reference available to preview/wasm loader.
       setBBPhysicPlugin(this);
 
       // UI first (menu entries are available even if WASM fails)
       safeDeleteAll(uiDeletables);
+      registerPhysicsDragTool(this);
+      registerPhysicsMode(this);
       registerTopMenu(this);
 
       try {
@@ -201,6 +413,8 @@ export function registerBBPhysicPlugin() {
       } catch {
         // ignore
       }
+      physicsMode = null;
+      physicsDragTool = null;
       wasmExports = undefined;
         clearBBPhysicWasmModule();
         setBBPhysicPlugin(null);
@@ -219,6 +433,15 @@ export function registerBBPhysicPlugin() {
         // ignore
       }
       safeDeleteAll(uiDeletables);
+
+      // Extra safety: ensure no stray duplicate buttons remain.
+      removeToolButtonsFromDom('bbphysic_drag', false);
+
+      try {
+        delete (window as any).BBPhysicSettings;
+      } catch {
+        // ignore
+      }
     }
   });
 }

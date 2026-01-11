@@ -214,6 +214,16 @@ function m3fromEulerXYZDeg(rotDeg: Vec3): Mat3 {
 function computeGroupPivotWorldCurrentPose(group: any): Vec3 {
   if (!group) return [0, 0, 0];
 
+  // Prefer Blockbench pivot (origin). For empty groups/bones, mesh world position can drift.
+  try {
+    const o = group?.origin;
+    if (o !== undefined && o !== null) {
+      return readGroupOriginAny(group);
+    }
+  } catch {
+    // ignore
+  }
+
   // Best path: ask THREE for world position.
   try {
     const mesh = group.mesh;
@@ -466,7 +476,17 @@ function clearObjects() {
 
 function buildGroupPivotMarker(group: any, color: any) {
   try {
-    const p = computeGroupPivotWorldCurrentPose(group);
+    let p = computeGroupPivotWorldCurrentPose(group);
+    try {
+      const uuid = String(group?.uuid ?? '');
+      const map = (window as any).BBPhysicPreviewGroupPivots as Record<string, Vec3> | undefined;
+      const override = uuid && map ? (map as any)[uuid] : null;
+      if (Array.isArray(override) && override.length >= 3) {
+        p = [Number(override[0]) || 0, Number(override[1]) || 0, Number(override[2]) || 0];
+      }
+    } catch {
+      // ignore
+    }
     const pos = new THREE.Vector3(p[0], p[1], p[2]);
     const geom = new THREE.BoxGeometry(0.8, 0.8, 0.8);
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthTest: false });

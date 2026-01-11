@@ -1,6 +1,6 @@
 import { t } from '../i18n';
 import { setWireframeTargets, updateWireframeOnce } from '../debug/wireframe';
-import { prepareSelectedCubesPhysicsJob, preparePhysicsJobFromGroups } from '../physics/prep';
+import { prepareSelectedCubesPhysicsJob, preparePhysicsJobFromGroups, preparePhysicsJobFromMovingAndColliderGroups } from '../physics/prep';
 
 let movingGroupUuid: string | null = null;
 let colliderGroupUuid: string | null = null;
@@ -147,7 +147,7 @@ export function openBBPhysicSolveDialog() {
 
       // Current stage: PREPARE ONLY.
       // Collect vertex/edge data from cubes within the selected groups and store in memory for later physics solving.
-      const job = preparePhysicsJobFromGroups([moving, collider]);
+      const job = preparePhysicsJobFromMovingAndColliderGroups(moving, collider);
 
       try {
         setWireframeTargets({ movingGroupUuid, colliderGroupUuid });

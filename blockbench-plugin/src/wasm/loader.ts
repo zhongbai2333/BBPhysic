@@ -3,6 +3,10 @@ export interface BBPhysicWasmExports {
   bbp_world_create: (gravityY: number) => number;
   bbp_world_step: (handle: number, dt: number) => void;
   bbp_world_free: (handle: number) => void;
+
+  // 求解器参数
+  // iterations: affects joint/collision constraint stiffness.
+  bbp_set_solver_iterations: (handle: number, iterations: number) => number;
   
   // 刚体管理
   bbp_add_rigid_body: (
@@ -25,6 +29,57 @@ export interface BBPhysicWasmExports {
     hy: number,
     hz: number
   ) => number;
+
+  // 碰撞体管理（扩展版）
+  // isSensor: 0=普通碰撞体, 1=传感器（不产生接触力）
+  bbp_add_box_collider_ex: (
+    handle: number,
+    bodyId: number,
+    hx: number,
+    hy: number,
+    hz: number,
+    isSensor: number
+  ) => number;
+
+  // 碰撞体管理（带 collision groups）
+  // membershipBits/filterBits: 32-bit bitmask
+  bbp_add_box_collider_groups: (
+    handle: number,
+    bodyId: number,
+    hx: number,
+    hy: number,
+    hz: number,
+    isSensor: number,
+    membershipBits: number,
+    filterBits: number
+  ) => number;
+
+  // 关节（constraints）
+  // 球关节：两端刚体默认禁用互相接触（由 wasm 侧实现 contacts_enabled=false）
+  bbp_add_spherical_joint: (
+    handle: number,
+    bodyId1: number,
+    bodyId2: number,
+    anchorX: number,
+    anchorY: number,
+    anchorZ: number
+  ) => number;
+
+  // 固定关节：把两个刚体刚性绑定为一个整体（用于同一 Group 内的多个 cube）
+  bbp_add_fixed_joint: (handle: number, bodyId1: number, bodyId2: number) => number;
+
+  // 刚性旋转关节（铰链/hinge）：只允许绕轴旋转
+  bbp_add_revolute_joint: (
+    handle: number,
+    bodyId1: number,
+    bodyId2: number,
+    anchorX: number,
+    anchorY: number,
+    anchorZ: number,
+    axisX: number,
+    axisY: number,
+    axisZ: number
+  ) => number;
   
   // Transform 获取/设置
   bbp_get_transform: (handle: number, bodyId: number) => number;
@@ -40,6 +95,13 @@ export interface BBPhysicWasmExports {
     rotZ: number,
     rotW: number
   ) => number;
+
+  // 刚体类型切换（用于拖拽时临时切换到运动学以提高关节稳定性）
+  bbp_set_body_type: (handle: number, bodyId: number, bodyType: number) => number;
+
+  // 速度设置（用于拖拽释放惯性）
+  bbp_set_linvel: (handle: number, bodyId: number, vx: number, vy: number, vz: number) => number;
+  bbp_set_angvel: (handle: number, bodyId: number, wx: number, wy: number, wz: number) => number;
   
   // 查询
   bbp_get_body_count: (handle: number) => number;
